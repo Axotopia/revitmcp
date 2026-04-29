@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-dotenv
+pydantic
+langchain
+langchain-ollama
+langgraph
+httpx
+pywin32

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "revit-2027": {
+      "command": "C:\\Program Files\\Autodesk\\Revit 2027 MCP Server Read-Tools Technical Preview\\Autodesk.RevitMcpServer.Stdio.exe",
+      "args": []
+    }
+  }
+}

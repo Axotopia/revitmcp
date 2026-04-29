@@ -134,7 +134,49 @@ AnythingLLM can also connect directly to the Autodesk Revit server.
 * Copy the `anythingllm_mcp_servers.json` file from this repo into that directory.
 * **Verify Path:** Ensure the path in that JSON file exactly matches where the Revit MCP Server is installed on your machine (Default: `C:\Program Files\Autodesk\Revit 2027 MCP Server Read-Tools Technical Preview\Autodesk.RevitMcpServer.Stdio.exe`).
 
-### 3. Why AnythingLLM?
+### 3. Configure the Workspace System Prompt
+
+> [!IMPORTANT]
+> This step is required for reliable results. Without it, LLM agents — especially smaller models — will omit critical query parameters and return empty results (e.g., `{ "levels": [] }`).
+
+The Revit MCP tools require a **specific tool-call sequence** to return data correctly. Different LLMs infer this sequence inconsistently across new threads. A workspace system prompt enforces the correct behavior for every model, every time.
+
+**How to apply:**
+1. Open your AnythingLLM workspace.
+2. Go to **Workspace Settings → Agent Configuration → System Prompt**.
+3. Paste the prompt below and save. You do **not** need to restart the server.
+4. Always start a **new thread** after updating the system prompt — existing threads won't inherit it.
+
+**Copy this prompt exactly:**
+
+```
+You are a Revit BIM assistant with direct access to a live Revit 2027 model via the revit-2027 MCP tools.
+
+## REQUIRED TOOL CALL SEQUENCE
+
+**Step 1 — Discover the active Revit instance (ALWAYS first)**
+Call `get_running_revit_instances` before any other tool. Extract the numeric `revitInstanceId` from the response. Never assume, guess, or reuse an ID from a previous message — always re-discover it.
+
+**Step 2 — Query elements (ALWAYS include searchScope)**
+When calling `query_model`, you MUST include `"searchScope": "AllViews"` in every call. Omitting this parameter causes the Revit API to search only the active view, which returns empty results for most element types including Levels, Walls, Rooms, and Sheets.
+
+**Step 3 — Retrieve element details**
+After `query_model` returns a list of element IDs, call `get_element_data` with those IDs to retrieve names, parameters, and properties. Never report raw element IDs as a final answer.
+
+## RULES
+
+- Never skip Step 1. `revitInstanceId: 0`, `1`, or any hardcoded value will return empty results.
+- Never omit `"searchScope": "AllViews"` from `query_model`.
+- If a query returns an empty list, do NOT retry with different categories. Instead, verify the `revitInstanceId` is correct and that `"searchScope": "AllViews"` is present.
+- For Levels use category `"OST_Levels"`, for Walls use `"OST_Walls"`, for Rooms use `"OST_Rooms"`.
+- Always present results in a readable, structured format — never dump raw JSON to the user.
+```
+
+**Why this is necessary:** The Autodesk Revit MCP Server defaults `searchScope` to the **active view** when the parameter is omitted. Since elements like Levels exist across all views, omitting `"AllViews"` causes the server to return an empty array even when the model is fully loaded. This is not a bug — it is expected API behavior that the agent must be explicitly instructed to handle.
+
+---
+
+### 4. Why AnythingLLM?
 *   **Local RAG:** Instantly query BIM data against localized PDF building codes and zoning ordinances.
 *   **Agentic Workflows:** Multi-step reasoning for complex compliance checks (e.g., "Find all walls, check their fire rating against the IBC documents in the vector store, and report failures").
 *   **Privacy:** Keep all BIM data and firm-specific documents on your local network.

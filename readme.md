@@ -1,6 +1,7 @@
-# Axoworks Logic Engine
+# Axoworks Revit MCP Logic Engine for AnythingLLM
 
-The Axoworks Logic Engine is a local, AI-powered orchestration backend designed for architectural QA/QC. It processes BIM data (specifically from Revit) and validates it against local zoning codes using advanced local LLMs, enforcing strict JSON-formatted logical constraints.
+**⚠️ Initial Experiment – Requires Significant Fine‑Tuning**
+This document outlines a preliminary design for a local AI chatbot that queries a Revit model through the Revit MCP (Model Context Protocol) server, assesses zoning, building code, and energy compliance, and generates reports. The architecture is a starting point; extensive testing, prompt calibration, and domain‑specific tuning will be necessary before production use.
 
 ---
 

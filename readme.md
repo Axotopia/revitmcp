@@ -163,12 +163,24 @@ When calling `query_model`, you MUST include `"searchScope": "AllViews"` in ever
 **Step 3 — Retrieve element details**
 After `query_model` returns a list of element IDs, call `get_element_data` with those IDs to retrieve names, parameters, and properties. Never report raw element IDs as a final answer.
 
+## VALID query_model PARAMETERS
+
+Only these parameters are accepted by `query_model`. Never add any others:
+- `revitInstanceId` (required, number) — from get_running_revit_instances
+- `input.categories` (required, array of strings) — e.g. `["OST_Levels"]`
+- `input.searchScope` (required, string) — ALWAYS set to `"AllViews"`
+- `input.maxResults` (optional, number) — limit results returned
+- `input.searchText` (optional, string) — filter by name
+
+Do NOT add `elementInclusionMode`, `includeTypes`, `scope`, or any other parameter not listed above. The MCP server will reject unknown parameters with an error.
+
 ## RULES
 
 - Never skip Step 1. `revitInstanceId: 0`, `1`, or any hardcoded value will return empty results.
 - Never omit `"searchScope": "AllViews"` from `query_model`.
+- **If `query_model` returns an error (not an empty list), STOP immediately.** Do not retry with different parameters, categories, or maxResults values. Report the exact error to the user and wait for instructions.
 - If a query returns an empty list, do NOT retry with different categories. Instead, verify the `revitInstanceId` is correct and that `"searchScope": "AllViews"` is present.
-- For Levels use category `"OST_Levels"`, for Walls use `"OST_Walls"`, for Rooms use `"OST_Rooms"`.
+- For Levels use category `"OST_Levels"`, for Walls use `"OST_Walls"`, for Roofs use `"OST_Roofs"`, for Rooms use `"OST_Rooms"`.
 - Always present results in a readable, structured format — never dump raw JSON to the user.
 ```
 
@@ -180,6 +192,31 @@ After `query_model` returns a list of element IDs, call `get_element_data` with 
 *   **Local RAG:** Instantly query BIM data against localized PDF building codes and zoning ordinances.
 *   **Agentic Workflows:** Multi-step reasoning for complex compliance checks (e.g., "Find all walls, check their fire rating against the IBC documents in the vector store, and report failures").
 *   **Privacy:** Keep all BIM data and firm-specific documents on your local network.
+
+---
+
+## ⚠️ Known Limitations & Bugs
+
+### 1. Revit MCP Server STA Thread Deadlock
+
+> [!CAUTION]
+> The Autodesk Revit MCP Server runs on a **single-threaded apartment (STA) model**. If an LLM agent issues multiple rapid-fire `query_model` calls that fail (e.g., due to invalid parameters or timeouts), the server's internal query processing thread can become permanently blocked — even though the pipe transport layer remains alive.
+
+**Symptoms:**
+* `tools/list` responds instantly, but all `query_model` calls hang indefinitely — including categories that previously worked (e.g., `OST_Levels`).
+* AnythingLLM shows "Agent complete" with no results, or the thread appears stuck and eventually times out.
+
+**Workaround:** Restart the Autodesk Revit MCP Server plugin or restart Revit entirely. There is currently no way to clear the deadlock without a restart.
+
+**Root cause:** When an LLM agent retries a failing tool call in a tight loop (common in AnythingLLM's agent executor), the queued JSON-RPC requests pile up on the pipe. The MCP server's STA thread gets blocked processing a failed request and never releases, starving all subsequent queries.
+
+### 2. AnythingLLM Agent Retry Behavior Cannot Be Fully Controlled via System Prompt
+
+AnythingLLM's agent executor has **built-in retry logic** at the platform level. Even if the workspace system prompt instructs the model to "stop immediately on error," the agent loop may still re-invoke the tool. This is an AnythingLLM platform limitation — the system prompt controls the LLM's reasoning but not the executor's retry policy. This retry behavior is the primary trigger for the STA deadlock described above.
+
+### 3. `OST_Roofs` Queries May Fail on Complex Models
+
+Querying `OST_Roofs` via `query_model` has been observed to fail or time out on models with complex roof geometry, even when other categories (`OST_Levels`, `OST_Walls`) return successfully. This may be a limitation of the Autodesk MCP Server's Technical Preview. If roof queries consistently fail, try reducing `maxResults` to `1` to isolate whether the category is supported for the current model.
 
 ---
 

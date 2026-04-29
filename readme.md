@@ -1,6 +1,30 @@
-Axoworks Revit MCP Logic Engine for AnythingLLM
+# Axoworks Revit MCP Logic Engine for AnythingLLM
 
-⚠️ Initial Experiment – Requires Significant Fine‑Tuning This document outlines a preliminary design for a local AI chatbot that queries a Revit model through the Revit MCP (Model Context Protocol) server, assesses zoning, building code, and energy compliance, and generates reports. The architecture is a starting point; extensive testing, prompt calibration, and domain‑specific tuning will be necessary before production use.
+> [!CAUTION]
+> **Experimental MVP:** This project is a technical experiment in "Intent Engineering." It requires significant fine-tuning, prompt calibration, and domain-specific logic refinement before it can be considered production-ready.
+
+---
+
+## 🌪️ From Closed Loops to "Open Loop Chaos Audits"
+
+The architectural industry is currently limited by "Closed Loop" AI assistants—tools like Autodesk Assistant that operate within the proprietary boundaries of a single software instance. While useful for basic tasks, they lack the firm-specific context, local zoning nuances, and jurisdictional RAG (Retrieval-Augmented Generation) data required for true professional auditing.
+
+**The Axoworks Revit MCP Engine** is designed to break this loop. By bridging the gap between the **Autodesk Revit MCP (Model Context Protocol) Server** and **AnythingLLM**, we enable an **"Open Loop Chaos Audit."**
+
+### Core Objectives:
+1.  **Extract & Assemble:** Move beyond simple data retrieval. This engine focuses on translating raw Revit elements into semantically rich structures that an LLM can actually "reason" about.
+2.  **RAG-Powered Compliance:** Query extracted model data against a firm’s proprietary knowledge base, local building codes, and site-specific documents stored in a vector database.
+3.  **Intent Engineering:** Shift the developer's focus from "reinventing the wheel" (LLM hosting, vector storage, UI) to refining the Python-based logic and intent that drives the extraction process.
+
+---
+
+## 🏗️ Architecture & Protocols
+
+This application serves as a high-performance Python middleware layer, leveraging modular infrastructure to ensure stability and speed.
+
+*   **Revit Bridge (Internal):** Uses **JSON-RPC 2.0 over NDJSON** (Newline-Delimited JSON) to communicate with the Revit MCP server via Windows Named Pipes. This ensures a low-latency, thread-safe connection to the BIM environment.
+*   **API Layer (External):** Exposes a **REST-based JSON API** (FastAPI) to external agents and orchestrators like AnythingLLM.
+*   **Orchestration Backbone:** By using **AnythingLLM**, we leverage a pre-built ecosystem for Local LLMs, Vector Databases, and Agentic workflows. This allows the Axoworks engine to function as a specialized "skill" or "toolset" within a larger AI brain.
 
 ---
 
@@ -94,9 +118,9 @@ The backend currently exposes the following endpoints (which can be consumed by 
 
 ---
 
-## 🧠 AnythingLLM Integration
+## 🧠 AnythingLLM Integration: The Intelligence Backbone
 
-To connect the Axoworks Engine and the Autodesk Revit MCP Server to your AnythingLLM desktop application, follow these steps:
+We have intentionally chosen **AnythingLLM** as our frontend and orchestration layer. This allows us to deliver a functional MVP without reinventing the wheel of local LLM management or vector storage. By leveraging AnythingLLM's existing infrastructure, we can focus 100% on the **Intent Engineering** of the Revit-Python bridge.
 
 ### 1. Configure Agent Skills (Custom Tools)
 We provide pre-configured custom skills in the `anythingllm` folder of this repository (`axo-revit-chat` and `axo-revit-audit`).
@@ -107,13 +131,13 @@ We provide pre-configured custom skills in the `anythingllm` folder of this repo
 ### 2. Configure Native MCP Server
 AnythingLLM can also connect directly to the Autodesk Revit server.
 * Navigate to `%APPDATA%\anythingllm-desktop\storage\plugins`.
-* Copy the `anythingllm_mcp_servers.json` file from this repo's `anythingllm/mcp` folder into that directory.
+* Copy the `anythingllm_mcp_servers.json` file from this repo into that directory.
 * **Verify Path:** Ensure the path in that JSON file exactly matches where the Revit MCP Server is installed on your machine (Default: `C:\Program Files\Autodesk\Revit 2027 MCP Server Read-Tools Technical Preview\Autodesk.RevitMcpServer.Stdio.exe`).
 
-### 3. LLM Hardware Recommendations (VRAM)
-Processing architectural models requires significant memory. 
-* **16GB VRAM (Most Users):** We recommend using a highly efficient local model via Ollama (e.g., `qwen2.5-coder:7b` or `qwen3:14b`). Using a massive 35B parameter model on a 16GB GPU will cause severe **LLM thrashing** (offloading to slower system RAM), bringing your chat speed to a halt.
-* **API-Based LLMs:** If your local hardware is insufficient, we highly recommend configuring your AnythingLLM workspace to use an API-based model (like OpenAI GPT-4o, Anthropic Claude 3.5 Sonnet, or DeepSeek API) to handle the complex reasoning, while relying on the local backend purely for secure data extraction.
+### 3. Why AnythingLLM?
+*   **Local RAG:** Instantly query BIM data against localized PDF building codes and zoning ordinances.
+*   **Agentic Workflows:** Multi-step reasoning for complex compliance checks (e.g., "Find all walls, check their fire rating against the IBC documents in the vector store, and report failures").
+*   **Privacy:** Keep all BIM data and firm-specific documents on your local network.
 
 ---
 

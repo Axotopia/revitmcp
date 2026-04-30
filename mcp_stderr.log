@@ -1,18 +1,1 @@
-2026-04-30 11:42:58,086 [revitmcp.mcp_server] INFO: Axoworks Revit MCP Proxy starting (stdio transport)...
-2026-04-30 11:42:58,086 [revitmcp.mcp_server] INFO: Reading JSON-RPC requests from stdin, writing to stdout.
-Axoworks Revit MCP Proxy ready.
-2026-04-30 11:42:59,976 [revitmcp.mcp_server] INFO: Received request: method=initialize id=1
-2026-04-30 11:42:59,977 [revitmcp.mcp_server] INFO: Received request: method=notifications/initialized id=None
-2026-04-30 11:43:00,477 [revitmcp.mcp_server] INFO: Received request: method=tools/list id=2
-2026-04-30 11:43:00,477 [revitmcp.governor] INFO: NEW: Request 08e41ff9ea97… registered.
-2026-04-30 11:43:01,785 [revitmcp.mcp_server] INFO: Discovered 6 native Revit tools + 3 custom tools
-2026-04-30 11:43:01,789 [revitmcp.mcp_server] INFO: Received request: method=tools/call id=3
-2026-04-30 11:43:01,789 [revitmcp.governor] INFO: NEW: Request 2d07fe65ebd2… registered.
-2026-04-30 11:43:03,124 [revitmcp.mcp_server] ERROR: Revit bridge error calling 'get_elements_by_category': Revit error [-32602]: Unknown tool: 'get_elements_by_category'
-2026-04-30 11:43:03,124 [revitmcp.mcp_server] ERROR: Bridge error handling tools/call: Revit error [-32602]: Unknown tool: 'get_elements_by_category'
-2026-04-30 11:43:03,129 [revitmcp.mcp_server] INFO: Received request: method=tools/call id=4
-2026-04-30 11:43:03,129 [revitmcp.governor] INFO: NEW: Request 7f13d87220d4… registered.
-2026-04-30 11:43:07,048 [revitmcp.mcp_server] INFO: Received request: method=tools/call id=5
-2026-04-30 11:43:07,048 [revitmcp.governor] INFO: NEW: Request e6e67816a0b9… registered.
-2026-04-30 11:43:08,344 [revitmcp.mcp_server] ERROR: Revit bridge error calling 'nonexistent_tool': Revit error [-32602]: Unknown tool: 'nonexistent_tool'
-2026-04-30 11:43:08,345 [revitmcp.mcp_server] ERROR: Bridge error handling tools/call: Revit error [-32602]: Unknown tool: 'nonexistent_tool'
+

@@ -248,11 +248,17 @@ Do NOT add `elementInclusionMode`, `includeTypes`, `scope`, or any other paramet
 
 ### 2. AnythingLLM Agent Retry Behavior Cannot Be Fully Controlled via System Prompt
 
-AnythingLLM's agent executor has **built-in retry logic** at the platform level. Even if the workspace system prompt instructs the model to "stop immediately on error," the agent loop may still re-invoke the tool. This is an AnythingLLM platform limitation — the system prompt controls the LLM's reasoning but not the executor's retry policy. This retry behavior is the primary trigger for the STA deadlock described above.
+AnythingLLM's agent executor has **built-in retry logic** at the platform level. Even if the workspace system prompt instructs the model to "stop immediately on error," the agent loop may still re-invoke the tool. This is an AnythingLLM platform limitation — the system prompt controls the LLM's reasoning but not the executor's retry policy. This retry behavior is the primary trigger for the main thread deadlock described above.
 
 ### 3. `OST_Roofs` Queries May Fail on Complex Models
 
 Querying `OST_Roofs` via `query_model` has been observed to fail or time out on models with complex roof geometry, even when other categories (`OST_Levels`, `OST_Walls`) return successfully. This may be a limitation of the Autodesk MCP Server's Technical Preview. If roof queries consistently fail, try reducing `maxResults` to `1` to isolate whether the category is supported for the current model.
+
+### 4. Inherent Latency and Governance Heartbeats
+
+Because Revit processes all database queries sequentially on a single main thread, complex queries (like extracting parameter data for hundreds of elements) inherently take time. If multiple requests are sent, they are forced to queue up and wait their turn.
+
+The Governance Layer does not *create* this latency, but it actively manages it. If a Revit task approaches the client timeout threshold, the governor intervenes by sending a heartbeat back to AnythingLLM to keep the connection alive. From the user's perspective, this means you may experience noticeable delays (sometimes 30-60+ seconds) while waiting for an agent to finish a complex task. This is expected behavior and a direct result of Revit's single-threaded architecture queuing the workload.
 
 ---
 

@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "revit-2027": {
-      "command": "C:\\Users\\desig\\Documents\\GitHub\\revitmcp\\venv\\Scripts\\python.exe",
+      "command": "C:\\path\\to\\your\\revitmcp\\venv\\Scripts\\python.exe",
       "args": [
-        "C:\\Users\\desig\\Documents\\GitHub\\revitmcp\\main_mcp.py"
+        "C:\\path\\to\\your\\revitmcp\\main_mcp.py"
       ],
       "env": {},
       "disabled": false,

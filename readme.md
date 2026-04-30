@@ -48,7 +48,7 @@ If you do not already have Python installed:
    ```bash
    ollama pull qwen3.6:35b
    ```
-   *(Note: You can configure the exact model used via the `.env` file).*
+   *(Note: You will select and configure this model directly inside AnythingLLM's settings).*
 
 ---
 
@@ -88,10 +88,6 @@ Autodesk Revit generates dynamic Named Pipes (e.g., `\\.\pipe\revit-mcp-1a2b3c..
 ### Bypassing API Ports
 Because the system now runs as a native MCP standard I/O proxy, it does not bind to any network ports (e.g., `8000`). It uses stdin/stdout, completely eliminating port collisions on strict firm networks.
 
-### Centralized AI Infrastructure
-If a firm prefers to host their LLMs on a centralized server rather than running 23GB models on individual laptops:
-* Open the `.env` file and change `OLLAMA_BASE_URL` from `http://localhost:11434` to the IP address of their centralized server (e.g., `http://192.168.1.100:11434`).
-* The engine will automatically route all heavy AI reasoning to the server while maintaining the local connection to the user's Revit pipe.
 
 ### Governance Layer Tuning
 The governance layer prevents Revit deadlocks from rapid LLM retries. You can tune these in `.env`:
@@ -163,7 +159,7 @@ Instead of connecting AnythingLLM directly to the Autodesk `.exe`, we route it t
 **Option B: Manual JSON Configuration**
 1. Navigate to your AnythingLLM plugins folder (e.g., `%APPDATA%\AnythingLLMDesktop\storage\plugins` or equivalent).
 2. Copy the `anythingllm_mcp_servers.json` file from the `anythingllm\mcp` directory of this repo into that directory.
-3. **CRITICAL STEP:** Open the copied JSON file and edit the absolute paths. You **must** change `C:\Users\desig\...` to match your actual Windows username and the correct path where you cloned this repository.
+3. **CRITICAL STEP:** Open the copied JSON file and edit the absolute paths. You **must** change `C:\path\to\your\revitmcp\...` to the actual location where you cloned this repository.
    - `command` should point to your `venv\Scripts\python.exe`
    - `args` should point to your `main_mcp.py`
 4. Restart AnythingLLM. The new tools (`axo_audit_septic`, etc.) will appear natively in your agent's toolkit alongside the native Autodesk tools.

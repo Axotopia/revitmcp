@@ -22,3 +22,9 @@ __pycache__/
 # AnythingLLM or local DB caches (if any)
 *.db
 *.sqlite3
+
+# Archived older architecture
+.archive/
+
+# Logs
+*.log

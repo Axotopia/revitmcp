@@ -289,6 +289,63 @@ try:
         print(f"  Code: {resp['error'].get('code')}")
         print(f"  Message: {resp['error'].get('message')}")
 
+    # ===== STEP 7: tools/call - axo_audit_floor_area (all levels) =====
+    print("\n\n" + "=" * 50)
+    print("STEP 7: tools/call - axo_audit_floor_area (all levels)")
+    print("=" * 50)
+    resp = send_request({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "axo_audit_floor_area",
+            "arguments": {},
+        },
+    })
+
+    if resp:
+        if resp.get("error"):
+            print(f"\n⚠ ERROR RESPONSE:")
+            print(f"  Code: {resp['error'].get('code')}")
+            print(f"  Message: {resp['error'].get('message')}")
+        elif resp.get("result"):
+            content = resp["result"].get("content", [])
+            print(f"\n✓ Got result with {len(content)} content item(s)")
+            for item in content[:3]:
+                text = item.get("text", "")[:500]
+                print(f"  Content preview: {text}...")
+
+    show_stderr()
+
+    # ===== STEP 8: tools/call - axo_audit_floor_area (filtered by level) =====
+    print("\n\n" + "=" * 50)
+    print("STEP 8: tools/call - axo_audit_floor_area (filtered by level)")
+    print("=" * 50)
+    resp = send_request({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "axo_audit_floor_area",
+            "arguments": {
+                "level_names": ["FP1.GARAGE", "FP2.ADU"],
+                "include_room_details": True,
+            },
+        },
+    })
+
+    if resp:
+        if resp.get("error"):
+            print(f"\n⚠ ERROR RESPONSE:")
+            print(f"  Code: {resp['error'].get('code')}")
+            print(f"  Message: {resp['error'].get('message')}")
+        elif resp.get("result"):
+            content = resp["result"].get("content", [])
+            print(f"\n✓ Got result with {len(content)} content item(s)")
+            for item in content[:3]:
+                text = item.get("text", "")[:500]
+                print(f"  Content preview: {text}...")
+
+    show_stderr()
+
 except KeyboardInterrupt:
     print("\n\nInterrupted by user.")
 except Exception as e:

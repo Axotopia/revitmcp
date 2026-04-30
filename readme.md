@@ -118,6 +118,7 @@ The MCP Proxy dynamically exposes the following tools directly to your AnythingL
 * `axo_audit_septic`: Runs strict, deterministic Python logic for septic setback compliance.
 * `axo_audit_energy`: (Placeholder) Energy envelope checks.
 * `axo_audit_wwr`: (Placeholder) Window-to-Wall ratio compliance.
+* `axo_audit_floor_area`: Queries floor area data from the active Revit model. Extracts Rooms (`OST_Rooms`), retrieves per-room area/name/number/level via `get_element_data`, and aggregates by level. Supports optional `level_names` filter (e.g., `["FP1.GARAGE", "FP2.ADU"]`) and `include_room_details` toggle.
 
 *(Note: These custom tools bypass LLM math errors by executing local calculations and only using the LLM for final narrative summaries).*
 

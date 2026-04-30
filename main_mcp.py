@@ -142,6 +142,30 @@ class McpStdioTransport:
                     "required": [],
                 },
             },
+            {
+                "name": "axo_audit_floor_area",
+                "description": (
+                    "Query floor area data from the active Revit model. "
+                    "Returns total floor area and per-room breakdown, grouped by level. "
+                    "Optionally filter by one or more level names (e.g., FP1.GARAGE, FP2.ADU)."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "level_names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional list of level names to filter by (e.g., ['FP1.GARAGE', 'FP2.ADU']). If omitted, returns data for all levels.",
+                        },
+                        "include_room_details": {
+                            "type": "boolean",
+                            "description": "Include individual room names, numbers, and areas in the output. Default: true.",
+                            "default": True,
+                        },
+                    },
+                    "required": [],
+                },
+            },
         ]
 
     async def get_tools(self) -> list[dict]:
@@ -330,6 +354,241 @@ class McpStdioTransport:
                          "Full implementation pending integration with query_model + get_element_data API.",
         }
 
+    async def _run_floor_area_audit(self, arguments: dict) -> dict:
+        """
+        Floor area audit — returns total & per-room floor area grouped by level.
+        
+        Uses the Revit pipe to query Rooms (OST_Rooms), then retrieves detailed
+        element data (Area, Name, Number, Level) via get_element_data.
+        Optionally filters by level name(s) such as FP1.GARAGE, FP2.ADU.
+        """
+        level_names = arguments.get("level_names", None)
+        include_room_details = arguments.get("include_room_details", True)
+
+        try:
+            # Step 1: Query all rooms via query_model
+            rooms_raw = await self._bridge.run_mcp_tool(
+                "query_model",
+                {
+                    "input": {
+                        "categories": ["OST_Rooms"],
+                        "searchScope": "AllViews",
+                        "maxResults": 500,
+                    }
+                },
+            )
+        except RevitBridgeError as exc:
+            return {"error": f"Failed to query Revit model rooms: {exc}"}
+
+        # Parse the MCP-compliant response format:
+        # {"content": [{"type": "text", "text": "{\"outcome\": ...}"}]}
+        def _extract_content(response: Any) -> list:
+            if isinstance(response, dict):
+                content = response.get("content", [])
+                if content and isinstance(content, list):
+                    text_parts = []
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            try:
+                                parsed = json.loads(item.get("text", "{}"))
+                                if isinstance(parsed, dict):
+                                    elements = parsed.get("outcome", {}).get("elements", [])
+                                    if not elements:
+                                        # Some servers return elements at the top level
+                                        elements = parsed.get("elements", [])
+                                    text_parts.extend(elements)
+                            except (json.JSONDecodeError, AttributeError):
+                                text_parts.append(item.get("text", ""))
+                    return text_parts
+            return []
+
+        rooms = _extract_content(rooms_raw)
+
+        if not rooms:
+            return {
+                "audit_type": "floor_area",
+                "total_rooms_found": 0,
+                "narrative": "No rooms found in the Revit model. "
+                             "Ensure rooms are placed on floor plans (Room elements, not just spaces). "
+                             "Try placing rooms via Revit's Room tool on the appropriate views.",
+                "levels": [],
+            }
+
+        # Step 2: Extract element IDs for get_element_data
+        element_ids = []
+        for room in rooms:
+            if isinstance(room, dict):
+                eid = room.get("elementId") or room.get("id")
+                if eid is not None:
+                    element_ids.append(str(eid))
+
+        # Step 3: Get detailed element data for all rooms
+        room_details = []
+        if element_ids:
+            try:
+                data_raw = await self._bridge.run_mcp_tool(
+                    "get_element_data",
+                    {"elementIds": element_ids},
+                )
+                # Parse get_element_data response
+                if isinstance(data_raw, dict):
+                    content = data_raw.get("content", [])
+                    if isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                try:
+                                    parsed = json.loads(item.get("text", "{}"))
+                                    if isinstance(parsed, dict):
+                                        elements = parsed.get("outcome", {}).get("elements", parsed.get("elements", []))
+                                        if isinstance(elements, list):
+                                            for elem in elements:
+                                                if isinstance(elem, dict):
+                                                    # Extract room data from parameters
+                                                    params = elem.get("parameters", {})
+                                                    level_param = (
+                                                        params.get("Level", {}).get("value")
+                                                        if isinstance(params.get("Level"), dict)
+                                                        else params.get("Level")
+                                                    )
+                                                    area_param = (
+                                                        params.get("Area", {}).get("value")
+                                                        if isinstance(params.get("Area"), dict)
+                                                        else params.get("Area")
+                                                    )
+                                                    name_param = (
+                                                        params.get("Name", {}).get("value")
+                                                        if isinstance(params.get("Name"), dict)
+                                                        else params.get("Name")
+                                                    )
+                                                    number_param = (
+                                                        params.get("Number", {}).get("value")
+                                                        if isinstance(params.get("Number"), dict)
+                                                        else params.get("Number")
+                                                    )
+                                                    room_details.append({
+                                                        "element_id": elem.get("elementId") or elem.get("id"),
+                                                        "name": name_param or elem.get("name", "Unnamed"),
+                                                        "number": number_param or elem.get("number", ""),
+                                                        "level": level_param or elem.get("level", "Unknown Level"),
+                                                        "area": self._try_parse_float(area_param, 0.0),
+                                                        "area_unit": "sq ft",
+                                                    })
+                                except (json.JSONDecodeError, AttributeError):
+                                    pass
+            except RevitBridgeError:
+                # Fallback: extract what we can from the query_model response
+                for room in rooms:
+                    if isinstance(room, dict):
+                        params = room.get("parameters", {})
+                        level_val = (
+                            params.get("Level", {}).get("value")
+                            if isinstance(params.get("Level"), dict)
+                            else params.get("Level", room.get("level", "Unknown"))
+                        )
+                        area_val = (
+                            params.get("Area", {}).get("value")
+                            if isinstance(params.get("Area"), dict)
+                            else params.get("Area", 0)
+                        )
+                        room_details.append({
+                            "element_id": room.get("elementId") or room.get("id"),
+                            "name": room.get("name", "Unnamed"),
+                            "number": room.get("number", ""),
+                            "level": level_val,
+                            "area": self._try_parse_float(area_val, 0.0),
+                            "area_unit": "sq ft",
+                        })
+        else:
+            # Fallback: use data directly from query_model
+            for room in rooms:
+                if isinstance(room, dict):
+                    room_details.append({
+                        "element_id": room.get("elementId") or room.get("id"),
+                        "name": room.get("name", "Unnamed"),
+                        "number": room.get("number", ""),
+                        "level": room.get("level", "Unknown"),
+                        "area": self._try_parse_float(room.get("area", 0), 0.0),
+                        "area_unit": "sq ft",
+                    })
+
+        # Step 4: Group by level
+        levels_map: dict[str, dict] = {}
+        for rd in room_details:
+            level_name = rd.get("level", "Unknown Level") or "Unknown Level"
+
+            # Apply level filter if specified
+            if level_names and level_name not in level_names:
+                continue
+
+            if level_name not in levels_map:
+                levels_map[level_name] = {
+                    "level_name": level_name,
+                    "total_rooms": 0,
+                    "total_area_sqft": 0.0,
+                    "rooms": [],
+                }
+
+            levels_map[level_name]["total_rooms"] += 1
+            levels_map[level_name]["total_area_sqft"] += rd["area"]
+            if include_room_details:
+                levels_map[level_name]["rooms"].append({
+                    "name": rd["name"],
+                    "number": rd["number"],
+                    "area_sqft": round(rd["area"], 2),
+                })
+
+        # Step 5: Build structured result
+        level_summaries = []
+        for lv in sorted(levels_map.values(), key=lambda x: x["level_name"]):
+            entry = {
+                "level_name": lv["level_name"],
+                "total_rooms": lv["total_rooms"],
+                "total_area_sqft": round(lv["total_area_sqft"], 2),
+            }
+            if include_room_details and lv["rooms"]:
+                entry["rooms"] = sorted(lv["rooms"], key=lambda r: r["name"])
+            level_summaries.append(entry)
+
+        grand_total = round(sum(lv["total_area_sqft"] for lv in levels_map.values()), 2)
+        total_rooms = sum(lv["total_rooms"] for lv in levels_map.values())
+
+        # Build narrative
+        if level_names:
+            filters_text = ", ".join(level_names)
+            narrative_parts = [
+                f"Floor area audit filtered to {len(level_summaries)} level(s): {filters_text}."
+            ]
+        else:
+            narrative_parts = [
+                f"Floor area audit across {len(level_summaries)} level(s)."
+            ]
+        narrative_parts.append(
+            f"Total floor area: {grand_total:,} sq ft across {total_rooms} room(s)."
+        )
+        if level_summaries:
+            for lv in level_summaries:
+                narrative_parts.append(
+                    f"  - {lv['level_name']}: {lv['total_area_sqft']:,} sq ft ({lv['total_rooms']} room(s))"
+                )
+
+        return {
+            "audit_type": "floor_area",
+            "total_rooms_found": total_rooms,
+            "grand_total_area_sqft": grand_total,
+            "levels": level_summaries,
+            "narrative": "\n".join(narrative_parts),
+        }
+
+    @staticmethod
+    def _try_parse_float(value: Any, default: float = 0.0) -> float:
+        """Safely parse a value as float, returning default on failure."""
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
     # -----------------------------------------------------------------------
     # Main request handler
     # -----------------------------------------------------------------------
@@ -401,6 +660,21 @@ class McpStdioTransport:
 
                 elif tool_name == "axo_audit_wwr":
                     result = await self._run_wwr_audit(arguments)
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(result, indent=2),
+                                }
+                            ]
+                        },
+                    }
+
+                elif tool_name == "axo_audit_floor_area":
+                    result = await self._run_floor_area_audit(arguments)
                     return {
                         "jsonrpc": "2.0",
                         "id": request_id,

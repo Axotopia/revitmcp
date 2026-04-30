@@ -1,8 +1,13 @@
 {
   "mcpServers": {
     "revit-2027": {
-      "command": "C:\\Program Files\\Autodesk\\Revit 2027 MCP Server Read-Tools Technical Preview\\Autodesk.RevitMcpServer.Stdio.exe",
-      "args": []
+      "command": "C:\\Users\\desig\\Documents\\GitHub\\revitmcp\\venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\desig\\Documents\\GitHub\\revitmcp\\main_mcp.py"
+      ],
+      "env": {},
+      "disabled": false,
+      "autoApprove": []
     }
   }
 }

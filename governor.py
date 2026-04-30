@@ -27,6 +27,8 @@ from typing import Any, Literal, Optional
 
 from dotenv import load_dotenv
 
+from coordinate_translator import translator
+
 load_dotenv()
 
 logger = logging.getLogger("revitmcp.governor")
@@ -258,6 +260,10 @@ class RequestGovernor:
             result = await asyncio.wait_for(
                 asyncio.shield(task), timeout=HEARTBEAT_THRESHOLD_S
             )
+            
+            # Apply Coordinate Translation (Path A) before finalizing
+            result = await translator.translate_payload(self, result)
+            
         except asyncio.TimeoutError:
             # The task is still running — emit an interim heartbeat.
             elapsed = time.monotonic() - state.started_at
@@ -291,6 +297,10 @@ class RequestGovernor:
         """Wait for a long-running task and cache its result when it finishes."""
         try:
             result = await task
+            
+            # Apply Coordinate Translation (Path A) before finalizing
+            result = await translator.translate_payload(self, result)
+            
             self._finalize(signature, state, result=result)
             logger.info(
                 "BACKGROUND COMPLETE: Request %s… finished after %.1fs.",

@@ -20,12 +20,13 @@ The architectural industry is currently limited by "Closed Loop" AI assistants�
 
 ## 🏗️ Architecture & Protocols
 
-This application serves as a high-performance Python middleware layer, leveraging modular infrastructure to ensure stability and speed.
+This application serves as a high-performance Python MCP (Model Context Protocol) Proxy layer, bridging AnythingLLM with the Autodesk Revit server to ensure stability, translation, and speed.
 
-*   **Revit Bridge (Internal):** Uses **JSON-RPC 2.0 over NDJSON** (Newline-Delimited JSON) to communicate with the Revit MCP server via Windows Named Pipes. This ensures a low-latency, thread-safe connection to the BIM environment.
-*   **API Layer (External):** Exposes a **REST-based JSON API** (FastAPI) to external agents and orchestrators like AnythingLLM.
-*   **Governance Middleware (Request Governor):** Intercepts all traffic between the API and the Revit pipe. It provides **Request Deduplication**, **Asynchronous Heartbeats** to prevent agent timeouts, and **Payload Auditing** to block dangerous queries before they reach Revit's STA thread.
-*   **Orchestration Backbone:** By using **AnythingLLM**, we leverage a pre-built ecosystem for Local LLMs, Vector Databases, and Agentic workflows. This allows the Axoworks engine to function as a specialized "skill" or "toolset" within a larger AI brain.
+*   **Revit Bridge (Internal):** Uses **JSON-RPC 2.0 over NDJSON** to communicate with the Autodesk Revit MCP server via Windows Named Pipes. This ensures a low-latency connection to the BIM environment.
+*   **MCP Proxy (External):** Exposes a **native MCP Server via standard I/O (stdio)**, allowing AnythingLLM to connect to it directly as a first-class citizen, completely bypassing buggy "Agent Skills" plugins.
+*   **Coordinate Translation Layer:** Silently intercepts MCP responses from Revit and translates Global Z coordinates (Internal Origin) to Project Z coordinates (Project Base Point), preventing LLM hallucination.
+*   **Governance Middleware (Request Governor):** Intercepts all traffic between the MCP Proxy and the Revit pipe. It provides **Request Deduplication**, **Asynchronous Heartbeats** to prevent agent timeouts, and **Payload Auditing** to block dangerous queries before they reach Revit's STA thread.
+*   **Custom Audit Tools:** Injects deterministic logic tools (e.g., Septic Setbacks) directly into the MCP payload, sitting seamlessly alongside native Revit tools.
 
 ---
 
@@ -84,10 +85,8 @@ Autodesk Revit generates dynamic Named Pipes (e.g., `\\.\pipe\revit-mcp-1a2b3c..
 * You do **not** need to hardcode the exact pipe name. 
 * The engine uses a robust PowerShell auto-discovery script to scan the host machine for any active pipe starting with the `REVIT_PIPE_PREFIX` defined in the `.env` file (default: `\\.\pipe\revit-mcp`). It will automatically connect.
 
-### Avoiding Port Collisions
-If you deploy this to a firm where port `8000` is already in use by another application:
-* Open the `.env` file and change `API_PORT=8000` to a free port (e.g., `8080`).
-* The engine will safely spin up on the new port.
+### Bypassing API Ports
+Because the system now runs as a native MCP standard I/O proxy, it does not bind to any network ports (e.g., `8000`). It uses stdin/stdout, completely eliminating port collisions on strict firm networks.
 
 ### Centralized AI Infrastructure
 If a firm prefers to host their LLMs on a centralized server rather than running 23GB models on individual laptops:
@@ -104,27 +103,27 @@ The governance layer prevents Revit deadlocks from rapid LLM retries. You can tu
 
 ## 🚀 Running the Engine
 
-1. **Activate the Virtual Environment**: `.\venv\Scripts\activate`
-2. **Start the FastAPI Server**:
-   ```bash
-   python main.py
-   ```
-The server will spin up on **`http://127.0.0.1:8000`** (or whichever port you set in `.env`).
+You **do not** need to manually start a server! Because this operates as a native MCP server, AnythingLLM automatically manages its lifecycle.
+
+1. Once configured in AnythingLLM (see below), AnythingLLM will spawn `main_mcp.py` in the background automatically when you open a workspace.
+2. The proxy will transparently connect to the Autodesk Revit Named Pipe, discover the native tools, inject its custom audit tools, and start proxying traffic.
 
 ---
 
-## 🧪 Testing the API
+## 🧪 Available Tools
 
-The backend currently exposes the following endpoints (which can be consumed by AnythingLLM or tested via `curl`):
+The MCP Proxy dynamically exposes the following tools directly to your AnythingLLM agent:
 
-### 1. `/chat` (Exploratory Mode)
-* **Purpose:** Runs a LangGraph ReAct agent that dynamically selects Revit tools to answer arbitrary questions about the BIM model.
+### 1. Native Revit Tools (Pass-through)
+* `query_model`, `get_element_data`, `zoom_to_elements`, etc. 
+* **Key Feature:** All geometry coordinates (`boundingBox`, `geometry` points) returned by these tools are automatically intercepted and translated from Global Z to Project Z in transit.
 
-### 2. `/audit` (Deterministic Mode)
-* **Purpose:** Runs strict, deterministic Python logic for specific compliance checks (e.g., Septic setbacks, Energy code compliance) bypassing LLM math errors, using the LLM only for final narrative summaries.
+### 2. Custom Audit Tools
+* `axo_audit_septic`: Runs strict, deterministic Python logic for septic setback compliance.
+* `axo_audit_energy`: (Placeholder) Energy envelope checks.
+* `axo_audit_wwr`: (Placeholder) Window-to-Wall ratio compliance.
 
-### 3. `/governor/status` (Observability)
-* **Purpose:** Returns a real-time snapshot of the governance layer, including active requests, cache hits, and any blocked "dangerous" queries.
+*(Note: These custom tools bypass LLM math errors by executing local calculations and only using the LLM for final narrative summaries).*
 
 ---
 
@@ -149,17 +148,25 @@ Without governance, these retries flood the Revit `ExternalEvent` queue and perm
 
 We have intentionally chosen **AnythingLLM** as our frontend and orchestration layer. This allows us to deliver a functional MVP without reinventing the wheel of local LLM management or vector storage. By leveraging AnythingLLM's existing infrastructure, we can focus 100% on the **Intent Engineering** of the Revit-Python bridge.
 
-### 1. Configure Agent Skills (Custom Tools)
-We provide pre-configured custom skills in the `anythingllm` folder of this repository (`axo-revit-chat` and `axo-revit-audit`).
-* Navigate to your AnythingLLM plugin folder: `%APPDATA%\anythingllm-desktop\storage\plugins\agent-skills` (e.g., `C:\Users\<YourUsername>\AppData\Roaming\anythingllm-desktop\storage\plugins\agent-skills`).
-* Copy the skill folders from the `anythingllm` directory of this repo into that `agent-skills` folder.
-* Restart AnythingLLM, and toggle these skills **ON** in your Workspace Settings.
+### 1. Configure the MCP Proxy
+Instead of connecting AnythingLLM directly to the Autodesk `.exe`, we route it through our Python Proxy.
 
-### 2. Configure Native MCP Server
-AnythingLLM can also connect directly to the Autodesk Revit server.
-* Navigate to `%APPDATA%\anythingllm-desktop\storage\plugins`.
-* Copy the `anythingllm_mcp_servers.json` file from this repo into that directory.
-* **Verify Path:** Ensure the path in that JSON file exactly matches where the Revit MCP Server is installed on your machine (Default: `C:\Program Files\Autodesk\Revit 2027 MCP Server Read-Tools Technical Preview\Autodesk.RevitMcpServer.Stdio.exe`).
+**Option A: Via AnythingLLM UI (Recommended)**
+1. Open AnythingLLM and go to **Settings → Agent Configuration → MCP Servers**.
+2. Click **Add New Server** and configure it as follows:
+   - **Name:** `revit-2027`
+   - **Type:** `command`
+   - **Command:** Absolute path to your virtual environment's Python executable (e.g., `C:\Users\YourName\Documents\GitHub\revitmcp\venv\Scripts\python.exe`)
+   - **Args:** Absolute path to `main_mcp.py` (e.g., `C:\Users\YourName\Documents\GitHub\revitmcp\main_mcp.py`)
+3. Save and wait for AnythingLLM to discover the tools.
+
+**Option B: Manual JSON Configuration**
+1. Navigate to your AnythingLLM plugins folder (e.g., `%APPDATA%\AnythingLLMDesktop\storage\plugins` or equivalent).
+2. Copy the `anythingllm_mcp_servers.json` file from the `anythingllm\mcp` directory of this repo into that directory.
+3. **CRITICAL STEP:** Open the copied JSON file and edit the absolute paths. You **must** change `C:\Users\desig\...` to match your actual Windows username and the correct path where you cloned this repository.
+   - `command` should point to your `venv\Scripts\python.exe`
+   - `args` should point to your `main_mcp.py`
+4. Restart AnythingLLM. The new tools (`axo_audit_septic`, etc.) will appear natively in your agent's toolkit alongside the native Autodesk tools.
 
 ### 3. Configure the Workspace System Prompt
 

@@ -3,7 +3,14 @@
   "hubId": "axoworks-chat",
   "description": "Route ALL questions about Revit model contents, walls, rooms, windows, roofs, plumbing, zoning, or spatial queries to this skill.",
   "author": "Axoworks",
-  "setup_args": {},
+  "setup_args": {
+    "engine_url": {
+      "type": "string",
+      "required": false,
+      "default": "http://127.0.0.1:8000",
+      "description": "The URL of the Axoworks Python logic engine."
+    }
+  },
   "entrypoint": {
     "file": "handler.js",
     "params": [

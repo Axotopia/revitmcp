@@ -3,7 +3,14 @@
   "hubId": "axoworks-audit",
   "description": "Use ONLY when the user explicitly requests a formal compliance audit, energy code check, septic setback verification, or building code audit.",
   "author": "Axoworks",
-  "setup_args": {},
+  "setup_args": {
+    "engine_url": {
+      "type": "string",
+      "required": false,
+      "default": "http://127.0.0.1:8000",
+      "description": "The URL of the Axoworks Python logic engine."
+    }
+  },
   "entrypoint": {
     "file": "handler.js",
     "params": [

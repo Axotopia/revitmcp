@@ -346,6 +346,58 @@ try:
 
     show_stderr()
 
+    # ===== STEP 9: tools/call - axo_audit_lot_area =====
+    print("\n\n" + "=" * 50)
+    print("STEP 9: tools/call - axo_audit_lot_area")
+    print("=" * 50)
+    resp = send_request({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "axo_audit_lot_area",
+            "arguments": {"area_unit": "both"},
+        },
+    })
+
+    if resp:
+        if resp.get("error"):
+            print(f"\n⚠ ERROR RESPONSE:")
+            print(f"  Code: {resp['error'].get('code')}")
+            print(f"  Message: {resp['error'].get('message')}")
+        elif resp.get("result"):
+            content = resp["result"].get("content", [])
+            print(f"\n✓ Got result with {len(content)} content item(s)")
+            for item in content[:3]:
+                text = item.get("text", "")[:500]
+                print(f"  Content preview: {text}...")
+
+    # ===== STEP 10: tools/call - axo_audit_setback =====
+    print("\n\n" + "=" * 50)
+    print("STEP 10: tools/call - axo_audit_setback")
+    print("=" * 50)
+    resp = send_request({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "axo_audit_setback",
+            "arguments": {"output_unit": "ft_in"},
+        },
+    })
+
+    if resp:
+        if resp.get("error"):
+            print(f"\n⚠ ERROR RESPONSE:")
+            print(f"  Code: {resp['error'].get('code')}")
+            print(f"  Message: {resp['error'].get('message')}")
+        elif resp.get("result"):
+            content = resp["result"].get("content", [])
+            print(f"\n✓ Got result with {len(content)} content item(s)")
+            for item in content[:3]:
+                text = item.get("text", "")[:800]
+                print(f"  Content preview: {text}...")
+
+    show_stderr()
+
 except KeyboardInterrupt:
     print("\n\nInterrupted by user.")
 except Exception as e:

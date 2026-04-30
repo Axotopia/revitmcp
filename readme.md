@@ -24,6 +24,7 @@ This application serves as a high-performance Python middleware layer, leveragin
 
 *   **Revit Bridge (Internal):** Uses **JSON-RPC 2.0 over NDJSON** (Newline-Delimited JSON) to communicate with the Revit MCP server via Windows Named Pipes. This ensures a low-latency, thread-safe connection to the BIM environment.
 *   **API Layer (External):** Exposes a **REST-based JSON API** (FastAPI) to external agents and orchestrators like AnythingLLM.
+*   **Governance Middleware (Request Governor):** Intercepts all traffic between the API and the Revit pipe. It provides **Request Deduplication**, **Asynchronous Heartbeats** to prevent agent timeouts, and **Payload Auditing** to block dangerous queries before they reach Revit's STA thread.
 *   **Orchestration Backbone:** By using **AnythingLLM**, we leverage a pre-built ecosystem for Local LLMs, Vector Databases, and Agentic workflows. This allows the Axoworks engine to function as a specialized "skill" or "toolset" within a larger AI brain.
 
 ---
@@ -93,6 +94,12 @@ If a firm prefers to host their LLMs on a centralized server rather than running
 * Open the `.env` file and change `OLLAMA_BASE_URL` from `http://localhost:11434` to the IP address of their centralized server (e.g., `http://192.168.1.100:11434`).
 * The engine will automatically route all heavy AI reasoning to the server while maintaining the local connection to the user's Revit pipe.
 
+### Governance Layer Tuning
+The governance layer prevents Revit deadlocks from rapid LLM retries. You can tune these in `.env`:
+* `GOVERNOR_HEARTBEAT_THRESHOLD_S=25`: Seconds before sending a "still processing" response to prevent client timeout.
+* `GOVERNOR_CACHE_TTL_S=10`: How long completed results stay in the deduplication cache.
+* `GOVERNOR_DANGEROUS_CATEGORIES`: Comma-separated list of categories that require filters when geometry is requested (e.g., `Generic Models`).
+
 ---
 
 ## 🚀 Running the Engine
@@ -115,6 +122,26 @@ The backend currently exposes the following endpoints (which can be consumed by 
 
 ### 2. `/audit` (Deterministic Mode)
 * **Purpose:** Runs strict, deterministic Python logic for specific compliance checks (e.g., Septic setbacks, Energy code compliance) bypassing LLM math errors, using the LLM only for final narrative summaries.
+
+### 3. `/governor/status` (Observability)
+* **Purpose:** Returns a real-time snapshot of the governance layer, including active requests, cache hits, and any blocked "dangerous" queries.
+
+---
+
+## 🛡️ Governance Layer: STA Thread Protection
+
+Revit operates on a **Single-Threaded Apartment (STA)** model. All database interactions execute sequentially on the main UI thread. AnythingLLM’s agent executor is asynchronous and "impatient"—if a complex Revit query takes longer than 30 seconds, the agent assumes failure and initiates rapid-fire retries. 
+
+Without governance, these retries flood the Revit `ExternalEvent` queue and permanently deadlock the host. The Axoworks engine implements a triple-layer governor to decouple the asynchronous agent from the synchronous host:
+
+1.  **Request Deduplication (The State Manager):** 
+    The engine tracks the signature (method + parameters) of every in-flight request. If a duplicate retry arrives while the host is still processing, the governor silently coalesces the request and waits for the original task to finish instead of forwarding a second trigger to Revit.
+
+2.  **Asynchronous Heartbeat (Timeout Mitigation):** 
+    If a Revit task approaches the client timeout threshold (25 seconds), the governor intercepts. It sends a system-level response back to the LLM: *"Tool execution in progress. Host is processing complex geometry. Wait and do not retry."* The original task stays alive in the background, and its results are cached for the LLM's next poll.
+
+3.  **Payload Auditing (Pre-validation):** 
+    Strict validation rules block broad or dangerous queries (e.g., querying "Generic Models" with `include_geometry: true` without a filter) before they ever touch the Revit thread. This prevents "bad" requests from ever reaching the STA queue.
 
 ---
 
@@ -209,6 +236,8 @@ Do NOT add `elementInclusionMode`, `includeTypes`, `scope`, or any other paramet
 **Workaround:** Restart the Autodesk Revit MCP Server plugin or restart Revit entirely. There is currently no way to clear the deadlock without a restart.
 
 **Root cause:** When an LLM agent retries a failing tool call in a tight loop (common in AnythingLLM's agent executor), the queued JSON-RPC requests pile up on the pipe. The MCP server's STA thread gets blocked processing a failed request and never releases, starving all subsequent queries.
+
+**Mitigation:** The **Governance Layer** (see section above) significantly reduces the risk of this deadlock by intercepting and coalescing duplicate retries and providing heartbeat keep-alives. However, a hard freeze can still occur if the Revit API itself hits an unrecoverable state during a geometry-heavy operation.
 
 ### 2. AnythingLLM Agent Retry Behavior Cannot Be Fully Controlled via System Prompt
 

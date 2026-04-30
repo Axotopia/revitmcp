@@ -5,11 +5,11 @@ from typing import Any, List, Optional
 
 from langchain_core.tools import tool
 
-from bridge import RevitBridge, RevitBridgeError
+from bridge import RevitBridge, RevitBridgeError, get_governed_bridge
 from schemas import RevitElement, RevitPoint
 from vector_store import query_code_db
 
-bridge = RevitBridge()
+bridge = get_governed_bridge()
 
 # -----------------------------------------------------------------------------
 # Parameter Normalization

@@ -12,7 +12,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 
-from bridge import RevitBridge, RevitBridgeError
+from bridge import RevitBridge, RevitBridgeError, get_governed_bridge
+from governor import PayloadViolation
 from tools import (
     calculate_septic_setback,
     calculate_window_to_wall_ratio,
@@ -80,7 +81,7 @@ class AuditResponse(BaseModel):
 
 @app.get("/health")
 async def health():
-    bridge = RevitBridge()
+    bridge = get_governed_bridge()
     found = False
     count = None
     try:
@@ -93,12 +94,18 @@ async def health():
 
 @app.post("/debug/revit_tools")
 async def debug_revit_tools():
-    bridge = RevitBridge()
+    bridge = get_governed_bridge()
     try:
         tools = await bridge.list_mcp_tools()
         return {"tools": tools}
     except RevitBridgeError as exc:
         return {"error": str(exc)}
+
+@app.get("/governor/status")
+async def governor_status():
+    """Exposes governor state: active requests, cache entries, and stats."""
+    bridge = get_governed_bridge()
+    return bridge.get_status()
 
 
 # -----------------------------------------------------------------------------
@@ -202,7 +209,7 @@ async def _agentic_extract_energy(thread_id: str, w_samp: list, r_samp: list, wi
 @app.post("/audit", response_model=AuditResponse)
 async def audit_endpoint(request: AuditRequest):
     thread_id = request.thread_id or str(uuid.uuid4())
-    bridge = RevitBridge()
+    bridge = get_governed_bridge()
     steps = []
 
     try:
@@ -275,6 +282,8 @@ async def audit_endpoint(request: AuditRequest):
         else:
             raise HTTPException(status_code=400, detail="Unsupported audit type")
 
+    except PayloadViolation as pv:
+        raise HTTPException(status_code=422, detail=pv.message)
     except RevitBridgeError as e:
         raise HTTPException(status_code=502, detail=str(e))
     except Exception as e:

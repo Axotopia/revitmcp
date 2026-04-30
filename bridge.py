@@ -208,3 +208,23 @@ class RevitBridge:
                 {"name": name, "arguments": arguments},
             )
         return self._unwrap(envelope)
+
+
+# ---------------------------------------------------------------------------
+# Governed Bridge Factory
+# ---------------------------------------------------------------------------
+
+_governor_instance = None
+
+
+def get_governed_bridge():
+    """Return a RequestGovernor wrapping the RevitBridge singleton.
+
+    All callers get the same governed instance — dedup, heartbeat, and
+    payload auditing are applied transparently.
+    """
+    global _governor_instance
+    if _governor_instance is None:
+        from governor import RequestGovernor  # deferred to avoid circular import
+        _governor_instance = RequestGovernor(RevitBridge())
+    return _governor_instance

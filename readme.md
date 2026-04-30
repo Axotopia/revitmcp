@@ -25,7 +25,7 @@ This application serves as a high-performance Python MCP (Model Context Protocol
 *   **Revit Bridge (Internal):** Uses **JSON-RPC 2.0 over NDJSON** to communicate with the Autodesk Revit MCP server via Windows Named Pipes. This ensures a low-latency connection to the BIM environment.
 *   **MCP Proxy (External):** Exposes a **native MCP Server via standard I/O (stdio)**, allowing AnythingLLM to connect to it directly as a first-class citizen, completely bypassing buggy "Agent Skills" plugins.
 *   **Coordinate Translation Layer:** Silently intercepts MCP responses from Revit and translates Global Z coordinates (Internal Origin) to Project Z coordinates (Project Base Point), preventing LLM hallucination.
-*   **Governance Middleware (Request Governor):** Intercepts all traffic between the MCP Proxy and the Revit pipe. It provides **Request Deduplication**, **Asynchronous Heartbeats** to prevent agent timeouts, and **Payload Auditing** to block dangerous queries before they reach Revit's STA thread.
+*   **Governance Middleware (Request Governor):** Intercepts all traffic between the MCP Proxy and the Revit pipe. It provides **Request Deduplication**, **Asynchronous Heartbeats** to prevent agent timeouts, and **Payload Auditing** to block dangerous queries before they reach Revit's main thread.
 *   **Custom Audit Tools:** Injects deterministic logic tools (e.g., Septic Setbacks) directly into the MCP payload, sitting seamlessly alongside native Revit tools.
 
 ---
@@ -127,9 +127,9 @@ The MCP Proxy dynamically exposes the following tools directly to your AnythingL
 
 ---
 
-## 🛡️ Governance Layer: STA Thread Protection
+## 🛡️ Governance Layer: Main Thread Protection
 
-Revit operates on a **Single-Threaded Apartment (STA)** model. All database interactions execute sequentially on the main UI thread. AnythingLLM’s agent executor is asynchronous and "impatient"—if a complex Revit query takes longer than 30 seconds, the agent assumes failure and initiates rapid-fire retries. 
+Revit enforces **single-threaded API access**. All operations related to reading and updating the model are queued and executed sequentially on the main UI thread. AnythingLLM’s agent executor is asynchronous and "impatient"—if a complex Revit query takes longer than 30 seconds, the agent assumes failure and initiates rapid-fire retries. 
 
 Without governance, these retries flood the Revit `ExternalEvent` queue and permanently deadlock the host. The Axoworks engine implements a triple-layer governor to decouple the asynchronous agent from the synchronous host:
 
@@ -140,7 +140,7 @@ Without governance, these retries flood the Revit `ExternalEvent` queue and perm
     If a Revit task approaches the client timeout threshold (25 seconds), the governor intercepts. It sends a system-level response back to the LLM: *"Tool execution in progress. Host is processing complex geometry. Wait and do not retry."* The original task stays alive in the background, and its results are cached for the LLM's next poll.
 
 3.  **Payload Auditing (Pre-validation):** 
-    Strict validation rules block broad or dangerous queries (e.g., querying "Generic Models" with `include_geometry: true` without a filter) before they ever touch the Revit thread. This prevents "bad" requests from ever reaching the STA queue.
+    Strict validation rules block broad or dangerous queries (e.g., querying "Generic Models" with `include_geometry: true` without a filter) before they ever touch the Revit thread. This prevents "bad" requests from ever reaching the main thread's queue.
 
 ---
 
@@ -231,10 +231,10 @@ Do NOT add `elementInclusionMode`, `includeTypes`, `scope`, or any other paramet
 
 ## ⚠️ Known Limitations & Bugs
 
-### 1. Revit MCP Server STA Thread Deadlock
+### 1. Revit MCP Server Main Thread Deadlock
 
 > [!CAUTION]
-> The Autodesk Revit MCP Server runs on a **single-threaded apartment (STA) model**. If an LLM agent issues multiple rapid-fire `query_model` calls that fail (e.g., due to invalid parameters or timeouts), the server's internal query processing thread can become permanently blocked — even though the pipe transport layer remains alive.
+> The Autodesk Revit MCP Server relies on **single-threaded API access**. If an LLM agent issues multiple rapid-fire `query_model` calls that fail (e.g., due to invalid parameters or timeouts), the server's internal query processing thread can become permanently blocked — even though the pipe transport layer remains alive.
 
 **Symptoms:**
 * `tools/list` responds instantly, but all `query_model` calls hang indefinitely — including categories that previously worked (e.g., `OST_Levels`).
@@ -242,7 +242,7 @@ Do NOT add `elementInclusionMode`, `includeTypes`, `scope`, or any other paramet
 
 **Workaround:** Restart the Autodesk Revit MCP Server plugin or restart Revit entirely. There is currently no way to clear the deadlock without a restart.
 
-**Root cause:** When an LLM agent retries a failing tool call in a tight loop (common in AnythingLLM's agent executor), the queued JSON-RPC requests pile up on the pipe. The MCP server's STA thread gets blocked processing a failed request and never releases, starving all subsequent queries.
+**Root cause:** When an LLM agent retries a failing tool call in a tight loop (common in AnythingLLM's agent executor), the queued JSON-RPC requests pile up on the pipe. The MCP server's main thread gets blocked processing a failed request and never releases, starving all subsequent queries.
 
 **Mitigation:** The **Governance Layer** (see section above) significantly reduces the risk of this deadlock by intercepting and coalescing duplicate retries and providing heartbeat keep-alives. However, a hard freeze can still occur if the Revit API itself hits an unrecoverable state during a geometry-heavy operation.
 

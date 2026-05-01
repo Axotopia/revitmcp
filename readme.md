@@ -1,20 +1,43 @@
 # Axoworks Revit MCP Logic Engine for AnythingLLM
 
 > [!CAUTION]
-> **Experimental MVP:** This project is a technical experiment in "Intent Engineering." It requires significant fine-tuning, prompt calibration, and domain-specific logic refinement before it can be considered production-ready.
+> **Experimental MVP / Proof of Concept:** This project is an early-stage technical experiment in "Intent Engineering." It is a work-in-progress that requires significant fine-tuning, prompt calibration, and the addition of more robust tools to the codebase before it can be considered production-ready.
 
 ---
 
-## 🌪️ From Closed Loops to "Open Loop Chaos Audits"
+## 🌪️ Breaking the Walled Garden: From Closed Loops to Sovereign RAG
 
-The architectural industry is currently limited by "Closed Loop" AI assistants—tools like Autodesk Assistant that operate within the proprietary boundaries of a single software instance. While useful for basic tasks, they lack the firm-specific context, local zoning nuances, and jurisdictional RAG (Retrieval-Augmented Generation) data required for true professional auditing.
+The AEC industry is currently limited by "Closed Loop" AI assistants—tools like Autodesk Assistant that operate strictly within the proprietary boundaries of a single software instance. Crucially, these built-in assistants do not allow outside sources to be integrated via RAG (Retrieval-Augmented Generation). This means you cannot natively audit your Revit model against the actual realities of your project: your specific contracts, local building codes, structural specifications, and zoning ordinances.
 
-**The Axoworks Revit MCP Engine** is designed to break this loop. By bridging the gap between the **Autodesk Revit MCP (Model Context Protocol) Server** and **AnythingLLM**, we enable an **"Open Loop Chaos Audit."**
+**The Axoworks Revit MCP Engine** is an experimental middleware designed to break this loop. By bridging the gap between the **Autodesk Revit MCP Server** and **AnythingLLM**, we enable robust, open-loop architectural auditing against your own document libraries.
 
-### Core Objectives:
-1.  **Extract & Assemble:** Move beyond simple data retrieval. This engine focuses on translating raw Revit elements into semantically rich structures that an LLM can actually "reason" about.
-2.  **RAG-Powered Compliance:** Query extracted model data against a firm’s proprietary knowledge base, local building codes, and site-specific documents stored in a vector database.
-3.  **Intent Engineering:** Shift the developer's focus from "reinventing the wheel" (LLM hosting, vector storage, UI) to refining the Python-based logic and intent that drives the extraction process.
+### Core Objectives
+
+1.  **Bring Your Own Knowledge (RAG):** Move beyond simple geometry retrieval. Extract Revit element data and query it directly against real business and legal documents stored securely in your own vector database.
+2.  **LLM Freedom & Data Sovereignty:** Maintain total control over your tech stack. By leveraging AnythingLLM's pre-built infrastructure, you have the free choice to use any LLM—whether running a sovereign local model to protect proprietary design data, or connecting to a powerful external API. 
+3.  **Intent Engineering:** By offloading vector storage and LLM inference to AnythingLLM, we can focus 100% of our development effort on refining the Python middleware and building robust, deterministic audit Tools.
+
+---
+
+## ⚠️ The Single-Thread Bottleneck (And How We Handle It)
+
+As an early proof of concept, this engine must navigate a major architectural limitation of the host Autodesk Revit MCP Server pipeline: **single-threaded API access**.
+
+Currently, all Revit database queries are forced to queue and execute sequentially on the main UI thread. When an asynchronous LLM agent issues rapid-fire, complex queries (or initiates retry loops), it creates a severe bottleneck that can easily deadlock the Autodesk pipe. We are hopeful that Autodesk will address this multi-threading limitation in future updates.
+
+**The Mitigation:** To prevent these lockups and keep the Revit MCP from crashing, this middleware routes all traffic through a strict **Governance Layer (`governor.py`)**. This governor manages request deduplication, provides asynchronous heartbeats to impatient LLM agents, and audits payloads to shield the main thread from overload.
+
+---
+
+### 🧪 Baseline Model & Expected Performance
+
+> [!NOTE]  
+> **Current Testing Baseline:** This middleware is currently optimized and tested using the **Qwen 3.6 (35B)** model running locally via Ollama (`qwen3.6:35b-a3b-bf16`). 
+
+Because this engine relies heavily on strict MCP tool-calling sequences and rigorous adherence to the workspace system prompt, your choice of LLM dictates the success rate of the audits.
+
+* **Recommended:** Models in the 30B+ parameter range (like Qwen or deep reasoning models) are highly recommended. They possess the necessary context window and instruction-following capabilities to handle complex JSON schema routing reliably.
+* **Warning (Smaller Models):** Smaller models (e.g., 7B–8B parameters) often fail to pass required arguments (such as omitting `"searchScope": "AllViews"`) or get stuck in infinite retry loops. This poor tool-calling behavior directly increases the risk of deadlocking the Revit main thread. Performance and outcomes will vary significantly if you deviate from the baseline model class.
 
 ---
 

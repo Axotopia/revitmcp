@@ -138,12 +138,17 @@ The MCP Proxy dynamically exposes the following tools directly to your AnythingL
 * **Key Feature:** All geometry coordinates (`boundingBox`, `geometry` points) returned by these tools are automatically intercepted and translated from Global Z to Project Z in transit.
 
 ### 2. Custom Audit Tools
-* `axo_audit_septic`: Runs strict, deterministic Python logic for septic setback compliance.
+* `axo_audit_septic`: (Placeholder) Septic setback compliance.
 * `axo_audit_energy`: (Placeholder) Energy envelope checks.
 * `axo_audit_wwr`: (Placeholder) Window-to-Wall ratio compliance.
 * `axo_audit_floor_area`: Queries floor area data from the active Revit model. Extracts Rooms (`OST_Rooms`), retrieves per-room area/name/number/level via `get_element_data`, and aggregates by level. Supports optional `level_names` filter (e.g., `["FP1.GARAGE", "FP2.ADU"]`) and `include_room_details` toggle.
-* `axo_audit_lot_area`: Calculates the lot area (area enclosed by property lines) from the active Revit model. Queries `OST_PropertyLine` elements with fallback strategies (`get_elements_by_category`, `OST_Site`). Extracts polyline/polygon geometry from element curves and bounding boxes, then computes enclosed area using the **shoelace formula** (deterministic math, no LLM). Supports `area_unit` parameter (`"sqft"`, `"acres"`, or `"both"`).
-* `axo_audit_setback`: Calculates the closest distance from building exterior walls to property lines (setback/proximity analysis). Queries `OST_Walls` for exterior walls and `OST_PropertyLine` (with fallbacks to `get_elements_by_category('Property Lines')` and `OST_Site`). Extracts bounding box extents and curve geometry from both element sets, then computes minimum perpendicular distances per side (North, South, East, West) using the point-to-line-segment distance formula (deterministic math, no LLM). Returns distances in feet & inches (configurable via `output_unit`: `"ft_in"`, `"ft"`, or `"in"`). Identifies the overall closest setback and provides property line segment details (start/end coordinates, orientation, length). Equivalent to Revit's built-in property line proximity analysis.
+* `axo_audit_lot_area`: Calculates the lot area (area enclosed by property lines) from the active Revit model. Queries `OST_SiteProperty` elements with fallback strategies (`get_elements_by_category`, `OST_Site`). Extracts polyline/polygon geometry from element curves and bounding boxes, then computes enclosed area using the **shoelace formula** (deterministic math, no LLM). Supports `area_unit` parameter (`"sqft"`, `"acres"`, or `"both"`).
+* `axo_audit_lot_coverage`: Calculates the lot coverage percentage — `(Building Footprint ÷ Total Lot Area) × 100` — for the active Revit model. This single tool replaces what would otherwise require multiple LLM-orchestrated tool calls. **Queries three data sources deterministically:**
+  1. **OST_SiteProperty** → lot area via shoelace formula
+  2. **OST_Floors** → building footprint from floor element areas
+  3. **OST_Areas** → additional covered areas (decks, patios, etc.)
+  Returns a structured breakdown with lot area (sq ft/acres), building footprint per element, covered areas, and two coverage percentages (building-only and total). All math is deterministic — no LLM involvement. This tool eliminates the multi-step fragility that caused the Qwen agent to fail on the same query. Supports `area_unit` (`"sqft"`, `"acres"`, or `"both"`) and `include_details` (toggle per-element breakdown).
+* `axo_audit_setback`: Calculates the closest distance from building exterior walls to property lines (setback/proximity analysis). Queries `OST_Walls` for exterior walls and `OST_SiteProperty` (with fallbacks to `get_elements_by_category('Property Lines')` and `OST_Site`). Extracts bounding box extents and curve geometry from both element sets, then computes minimum perpendicular distances per side (North, South, East, West) using the point-to-line-segment distance formula (deterministic math, no LLM). Returns distances in feet & inches (configurable via `output_unit`: `"ft_in"`, `"ft"`, or `"in"`). Identifies the overall closest setback and provides property line segment details (start/end coordinates, orientation, length). Equivalent to Revit's built-in property line proximity analysis.
 
 *(Note: These custom tools bypass LLM math errors by executing local calculations and only using the LLM for final narrative summaries).*
 
@@ -208,36 +213,40 @@ The Revit MCP tools require a **specific tool-call sequence** to return data cor
 ```
 You are a Revit BIM assistant with direct access to a live Revit 2027 model via the revit-2027 MCP tools.
 
-## REQUIRED TOOL CALL SEQUENCE
+### Recommended Workflow
 
-**Step 1 — Discover the active Revit instance (ALWAYS first)**
-Call `get_running_revit_instances` before any other tool. Extract the numeric `revitInstanceId` from the response. Never assume, guess, or reuse an ID from a previous message — always re-discover it.
+The steps below describe a typical query flow. Adapt them to each request — if a tool is not available or returns unexpected results, proceed with what you have.
 
-**Step 2 — Query elements (ALWAYS include searchScope)**
-When calling `query_model`, you MUST include `"searchScope": "AllViews"` in every call. Omitting this parameter causes the Revit API to search only the active view, which returns empty results for most element types including Levels, Walls, Rooms, and Sheets.
+**Step 1 — Identify the active Revit instance**
+Call `get_running_revit_instances` if available to discover the numeric `revitInstanceId`. If this tool is not in your toolkit, proceed without it — some models do not require an explicit instance ID.
 
-**Step 3 — Retrieve element details**
-After `query_model` returns a list of element IDs, call `get_element_data` with those IDs to retrieve names, parameters, and properties. Never report raw element IDs as a final answer.
+**Step 2 — Query elements**
+When calling `query_model`, include `"searchScope": "AllViews"` in every call. Without this parameter, the Revit API searches only the active view and returns empty results for most element types.
 
-## VALID query_model PARAMETERS
+**Step 3 — Enrich with element details**
+After `query_model` returns element IDs, call `get_element_data` with those IDs to retrieve names, parameters, and properties. Report meaningful data rather than raw element IDs.
 
-Only these parameters are accepted by `query_model`. Never add any others:
-- `revitInstanceId` (required, number) — from get_running_revit_instances
-- `input.categories` (required, array of strings) — e.g. `["OST_Levels"]`
-- `input.searchScope` (required, string) — ALWAYS set to `"AllViews"`
-- `input.maxResults` (optional, number) — limit results returned
+### Valid query_model Parameters
+
+Only these parameters are accepted. Do not add others:
+- `revitInstanceId` (number) — if available from Step 1
+- `input.categories` (array of strings, required) — e.g. `["OST_Levels"]`
+- `input.searchScope` (string, required) — always `"AllViews"`
+- `input.maxResults` (optional, number) — limit results
 - `input.searchText` (optional, string) — filter by name
 
-Do NOT add `elementInclusionMode`, `includeTypes`, `scope`, or any other parameter not listed above. The MCP server will reject unknown parameters with an error.
+Parameters like `elementInclusionMode`, `includeTypes`, `scope`, or `outputOptions` are rejected by the MCP server.
 
-## RULES
+### Rules
 
-- Never skip Step 1. `revitInstanceId: 0`, `1`, or any hardcoded value will return empty results.
-- Never omit `"searchScope": "AllViews"` from `query_model`.
-- **If `query_model` returns an error (not an empty list), STOP immediately.** Do not retry with different parameters, categories, or maxResults values. Report the exact error to the user and wait for instructions.
-- If a query returns an empty list, do NOT retry with different categories. Instead, verify the `revitInstanceId` is correct and that `"searchScope": "AllViews"` is present.
-- For Levels use category `"OST_Levels"`, for Walls use `"OST_Walls"`, for Roofs use `"OST_Roofs"`, for Rooms use `"OST_Rooms"`.
-- Always present results in a readable, structured format — never dump raw JSON to the user.
+- **instanceId**: If `get_running_revit_instances` is available, use it. Hardcoded `revitInstanceId: 0` or `1` values may return empty results. If the tool is not available, query without it.
+- **searchScope**: Always include `"searchScope": "AllViews"` in `query_model` calls. This is the most common source of empty results.
+- **stop on error**: If `query_model` returns an error (not an empty list), stop. Do not retry with different parameters or categories. Report the error to the user.
+- **empty results**: If a query returns an empty list, first verify the category name is correct and that `"searchScope": "AllViews"` is present before retrying.
+- **category map**: Levels = `OST_Levels`, Walls = `OST_Walls`, Roofs = `OST_Roofs`, Rooms = `OST_Rooms`, Floors = `OST_Floors`, Property Lines = `OST_SiteProperty`, Areas = `OST_Areas`, Project Information = `OST_ProjectInformation`.
+- **lot coverage**: When asked to calculate lot coverage, call `axo_audit_lot_coverage` in a single tool invocation. Do NOT attempt to calculate it manually by calling individual tools like `axo_audit_lot_area`, `query_model`, or `get_element_data` separately — the composite tool handles all queries internally and returns a deterministic result. Manual multi-step orchestration often fails due to overlapping floor areas, missing property line detection, and misinterpretation of intermediate results.
+- **output format**: Present results in a readable, structured format — tables, bullet lists, or sections. Do not dump raw JSON.
+- **tool invocations**: Use the native tool-calling interface provided by your platform. Do not write out simulated tool call syntax or JSON in your conversational responses.
 ```
 
 **Why this is necessary:** The Autodesk Revit MCP Server defaults `searchScope` to the **active view** when the parameter is omitted. Since elements like Levels exist across all views, omitting `"AllViews"` causes the server to return an empty array even when the model is fully loaded. This is not a bug — it is expected API behavior that the agent must be explicitly instructed to handle.
@@ -281,6 +290,14 @@ Querying `OST_Roofs` via `query_model` has been observed to fail or time out on 
 Because Revit processes all database queries sequentially on a single main thread, complex queries (like extracting parameter data for hundreds of elements) inherently take time. If multiple requests are sent, they are forced to queue up and wait their turn.
 
 The Governance Layer does not *create* this latency, but it actively manages it. If a Revit task approaches the client timeout threshold, the governor intervenes by sending a heartbeat back to AnythingLLM to keep the connection alive. From the user's perspective, this means you may experience noticeable delays (sometimes 30-60+ seconds) while waiting for an agent to finish a complex task. This is expected behavior and a direct result of Revit's single-threaded architecture queuing the workload.
+
+### 5. Read-Only and Host-Model Access Only
+
+The Revit MCP is currently restricted by the following environmental constraints:
+
+*   **Read-Only Access:** The engine can only query and retrieve data from the model.
+*   **Host Model Only:** Only the elements within the primary host model are available for query.
+*   **Linked Models Inaccessible:** Data from linked Revit models in the primary host model is currently not accessible, similar to limitations found in the Revit 2027 built-in Autodesk Assistant
 
 ---
 

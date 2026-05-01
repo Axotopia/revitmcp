@@ -98,6 +98,8 @@ class RequestGovernor:
         self._bridge = bridge
         self._active: dict[str, RequestState] = {}
         self._lock = asyncio.Lock()
+        self._semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+        self._throttle_delay = 0.5  # Give Revit UI time to breathe between requests
         self._stats = {
             "total_requests": 0,
             "deduped_requests": 0,
@@ -132,25 +134,37 @@ class RequestGovernor:
             arguments = params.get("arguments", {})
 
             # Rule: geometry on dangerous/massive categories without filters
-            if tool_name == "get_elements_by_category":
-                category = arguments.get("category", "")
-                include_geo = arguments.get("include_geometry", False)
+            if tool_name in ["get_elements_by_category", "query_model"]:
+                # query_model nests its params inside an "input" key: {"input": {"categories": [...]}}
+                # get_elements_by_category uses a flat "category" string at the top level.
+                if tool_name == "query_model":
+                    inner = arguments.get("input", {})
+                    cats = inner.get("categories", [])
+                    if not isinstance(cats, list):
+                        cats = [inner.get("category", "")]
+                    include_geo = inner.get("include_geometry", False)
+                else:
+                    cats = [arguments.get("category", "")]
+                    include_geo = arguments.get("include_geometry", False)
 
-                if include_geo and category in DANGEROUS_CATEGORIES:
-                    raise PayloadViolation(
-                        f"Rejected: querying '{category}' with include_geometry=True "
-                        f"is extremely expensive. Add a filter or set include_geometry "
-                        f"to False. Dangerous categories: {DANGEROUS_CATEGORIES}",
-                        code=-32602,
-                    )
+                for category in cats:
+                    if include_geo and category in DANGEROUS_CATEGORIES:
+                        raise PayloadViolation(
+                            f"Rejected: querying '{category}' with include_geometry=True "
+                            f"is extremely expensive. Add a filter or set include_geometry "
+                            f"to False. Dangerous categories: {DANGEROUS_CATEGORIES}",
+                            code=-32602,
+                        )
 
-                # Rule: empty / missing category
-                if not category or not category.strip():
-                    raise PayloadViolation(
-                        "Rejected: 'category' parameter is required and cannot be empty. "
-                        "Specify a Revit category such as 'Walls', 'Doors', 'Windows', etc.",
-                        code=-32602,
-                    )
+                # Rule: empty / missing category for get_elements_by_category only
+                # (query_model without categories is valid — it queries all elements)
+                if tool_name == "get_elements_by_category":
+                    if not cats or not any(cats):
+                        raise PayloadViolation(
+                            "Rejected: 'category' parameter is required for get_elements_by_category "
+                            "and cannot be empty. Specify a Revit category such as 'OST_Walls', 'OST_Doors', etc.",
+                            code=-32602,
+                        )
 
             # Rule: blank tool name
             if not tool_name or not tool_name.strip():
@@ -244,7 +258,8 @@ class RequestGovernor:
         self,
         signature: str,
         state: RequestState,
-        coro,
+        name: str,
+        arguments: dict,
     ) -> Any:
         """
         Execute the real bridge call with a heartbeat watchdog.
@@ -253,7 +268,16 @@ class RequestGovernor:
         to the *current* awaiter.  The real result is cached under the
         signature so the next request gets the actual data.
         """
-        task = asyncio.create_task(coro)
+        async def _throttled_coro():
+            async with self._semaphore:
+                try:
+                    res = await self._bridge.run_mcp_tool(name, arguments)
+                    return res
+                finally:
+                    # Brief pause to let Revit process its UI message queue
+                    await asyncio.sleep(self._throttle_delay)
+
+        task = asyncio.create_task(_throttled_coro())
 
         try:
             # Wait up to the heartbeat threshold for the real result.
@@ -387,8 +411,7 @@ class RequestGovernor:
                     )
 
         # 3. Execute with heartbeat watchdog
-        coro = self._bridge.run_mcp_tool(name, arguments)
-        return await self._execute_with_heartbeat(signature, state, coro)
+        return await self._execute_with_heartbeat(signature, state, name, arguments)
 
     async def list_mcp_tools(self) -> Any:
         """

@@ -26,5 +26,8 @@ __pycache__/
 # Archived older architecture
 .archive/
 
+# Refactor Plans
+plans/
+
 # Logs
 *.log

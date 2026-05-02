@@ -686,16 +686,69 @@ class McpStdioTransport:
     async def _run_lot_area_audit(self, arguments: dict) -> dict:
         """
         Lot area audit — retrieves the lot area directly from property lines.
-        
-        Since Autodesk Revit MCP server does not export geometry for property lines,
-        this method queries the OST_SiteProperty elements and extracts the 'Area'
-        parameter directly, instead of relying on geometric math.
+
+        Revit pre-calculates the Area for each OST_SiteProperty element, so
+        the value is available in the query_model response without needing a
+        separate get_element_data call.  We still fall back to get_element_data
+        in case the server omits inline parameters for any reason.
         """
         area_unit = arguments.get("area_unit", "both")
         one_acre_sqft = 43560.0
-        
+
+        # Candidate parameter key names for area and name
+        AREA_KEYS = ["Area", "area", "ROOM_AREA", "GSA_SPACE_AREA", "NetArea", "GrossArea"]
+        NAME_KEYS = ["Name", "Mark", "Comments", "ELEM_TYPE_PARAM"]
+
+        def _pick(params: dict, keys: list):
+            """Return the first matching value from params, unwrapping {value:} dicts."""
+            for k in keys:
+                if k in params:
+                    v = params[k]
+                    return v.get("value") if isinstance(v, dict) else v
+            return None
+
+        def _extract_elem_list(parsed: dict) -> list:
+            """
+            Normalise a parsed JSON response to a flat list of element dicts.
+            Handles:
+              Shape A: {"outcome": {"elements": [...]}}
+              Shape A2: {"elements": [...]}
+              Shape B: {"results": {"Element Ids": [...]} }  (IDs only, no params)
+              Shape B2: {"results": {"123": {"parameters": {...}}, ...}}
+            Returns list of element dicts (may have "elementId" and "parameters").
+            """
+            # Shape A / A2
+            elems = parsed.get("outcome", {}).get("elements", [])
+            if not elems:
+                elems = parsed.get("elements", [])
+            if elems and isinstance(elems, list):
+                return [e for e in elems if isinstance(e, dict)]
+
+            # Shape B2: results is a dict keyed by element id with value dicts
+            results = parsed.get("results", {})
+            if isinstance(results, dict):
+                # Sub-case B: plain "Element Ids" list — convert to stub dicts
+                if "Element Ids" in results:
+                    return [{"elementId": eid} for eid in results["Element Ids"]]
+                # Sub-case B2: keyed by id with element data
+                out = []
+                for val in results.values():
+                    if isinstance(val, dict):
+                        out.append(val)
+                return out
+            if isinstance(results, list):
+                return [{"elementId": eid} for eid in results]
+
+            # Shape C: top-level "Element Ids"
+            if "Element Ids" in parsed:
+                return [{"elementId": eid} for eid in parsed["Element Ids"]]
+
+            return []
+
         try:
-            # Query OST_SiteProperty via query_model
+            # ----------------------------------------------------------------
+            # Step 1: query_model for OST_SiteProperty
+            # ----------------------------------------------------------------
             raw = await self._run_governed_tool_sync(
                 "query_model",
                 {
@@ -706,124 +759,146 @@ class McpStdioTransport:
                     }
                 },
             )
-            
-            # Parse MCP response
-            element_ids = []
+
+            # Collect all elements with whatever inline data query_model provides
+            query_elements = []  # list of element dicts from query_model
+            raw_text_debug = ""
             if isinstance(raw, dict):
-                content = raw.get("content", [])
-                if isinstance(content, list):
-                    for item in content:
-                        if isinstance(item, dict) and item.get("type") == "text":
-                            try:
-                                import json
-                                parsed = json.loads(item.get("text", "{}"))
-                                if "results" in parsed:
-                                    element_ids = parsed.get("results", {}).get("Element Ids", [])
-                            except Exception:
-                                pass
-                                
-            if not element_ids:
+                for item in raw.get("content", []):
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        raw_text = item.get("text", "{}")
+                        raw_text_debug = raw_text[:500]
+                        try:
+                            parsed = json.loads(raw_text)
+                            query_elements = _extract_elem_list(parsed)
+                        except Exception as ex:
+                            raw_text_debug += f" [json error: {ex}]"
+
+            if not query_elements:
                 return {
                     "audit_type": "lot_area",
                     "status": "Unavailable",
-                    "narrative": "The lot area audit could not be completed — no property lines (OST_SiteProperty) were found in the current Revit model."
+                    "narrative": (
+                        "No OST_SiteProperty elements found in the model.\n"
+                        f"Diagnostic — raw response snippet: {raw_text_debug!r}"
+                    ),
                 }
-                
-            # Get detailed element data — KeyParameters is proven to return Area for OST_SiteProperty
-            data_raw = await self._run_governed_tool_sync(
-                "get_element_data",
-                {
-                    "elementIds": [int(eid) for eid in element_ids],
-                    "outputOptions": {
-                        "basicElementInfo": True,
-                        "parametersOutputType": "KeyParameters"
-                    }
-                },
-            )
-            
-            total_area_sqft = 0.0
+
+            # ----------------------------------------------------------------
+            # Step 2: Try to read Area from inline query_model parameters
+            # (Revit pre-calculates Area for site property elements)
+            # ----------------------------------------------------------------
             lots = []
-            raw_params_debug = []  # diagnostic: what params did we actually see?
-            
-            # Area parameter names Revit may use for property lines
-            AREA_PARAM_NAMES = ["Area", "area", "ROOM_AREA", "GSA_SPACE_AREA", "NetArea", "GrossArea"]
-            NAME_PARAM_NAMES = ["Name", "Mark", "Comments", "ELEM_TYPE_PARAM"]
+            element_ids_for_fallback = []
+            params_debug = []
 
-            def _find_param(params: dict, candidates: list):
-                """Try each candidate key; return (key, raw_value) for the first hit."""
-                for name in candidates:
-                    if name in params:
-                        raw = params[name]
-                        val = raw.get("value") if isinstance(raw, dict) else raw
-                        return name, val
-                return None, None
+            for elem in query_elements:
+                eid = elem.get("elementId") or elem.get("id")
+                if eid is not None:
+                    element_ids_for_fallback.append(eid)
 
-            if isinstance(data_raw, dict):
-                content = data_raw.get("content", [])
-                if isinstance(content, list):
-                    for item in content:
-                        if isinstance(item, dict) and item.get("type") == "text":
-                            try:
-                                import json
-                                parsed = json.loads(item.get("text", "{}"))
-                                results = parsed.get("results", {})
-                                # Results may be a dict keyed by element id, or a list
-                                if isinstance(results, list):
-                                    results = {str(i): v for i, v in enumerate(results)}
-                                if isinstance(results, dict):
-                                    for key, val in results.items():
-                                        if not isinstance(val, dict):
-                                            continue
-                                        # Parameters may be nested under "parameters" or directly on val
-                                        params = val.get("parameters", val)
-                                        raw_params_debug.append(list(params.keys())[:20])
-                                        
-                                        _, area_val = _find_param(params, AREA_PARAM_NAMES)
-                                        _, name_val = _find_param(params, NAME_PARAM_NAMES)
-                                        name_val = name_val or f"Lot {key}"
+                # Parameters may be inline (Shape A) or absent (Shape B stub)
+                params = elem.get("parameters", {})
+                if not params:
+                    # Also check if the element itself has area-like top-level keys
+                    params = {k: v for k, v in elem.items() if k not in ("elementId", "id", "category", "type")}
 
+                params_debug.append(list(params.keys())[:20])
+                area_val = _pick(params, AREA_KEYS)
+                name_val = _pick(params, NAME_KEYS) or f"Lot {eid}"
+
+                if area_val is not None:
+                    try:
+                        area_float = self._extract_number(area_val)
+                        if area_float > 0:
+                            lots.append({"name": name_val, "area_sqft": area_float, "element_id": eid})
+                    except ValueError:
+                        pass
+
+            # ----------------------------------------------------------------
+            # Step 3: Fallback — get_element_data (no outputOptions restriction)
+            # ----------------------------------------------------------------
+            if not lots and element_ids_for_fallback:
+                ge_debug = ""
+                try:
+                    data_raw = await self._run_governed_tool_sync(
+                        "get_element_data",
+                        {"elementIds": [int(eid) for eid in element_ids_for_fallback]},
+                    )
+                    if isinstance(data_raw, dict):
+                        for item in data_raw.get("content", []):
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                ge_raw = item.get("text", "{}")
+                                ge_debug = ge_raw[:500]
+                                try:
+                                    parsed = json.loads(ge_raw)
+                                    for elem_val in _extract_elem_list(parsed):
+                                        eid = elem_val.get("elementId") or elem_val.get("id")
+                                        params = elem_val.get("parameters", elem_val)
+                                        params_debug.append(list(params.keys())[:20])
+                                        area_val = _pick(params, AREA_KEYS)
+                                        name_val = _pick(params, NAME_KEYS) or f"Lot {eid}"
                                         if area_val is not None:
                                             try:
                                                 area_float = self._extract_number(area_val)
                                                 if area_float > 0:
-                                                    total_area_sqft += area_float
-                                                    lots.append({"name": name_val, "area_sqft": area_float})
+                                                    lots.append({"name": name_val, "area_sqft": area_float, "element_id": eid})
                                             except ValueError:
                                                 pass
-                            except Exception as parse_err:
-                                raw_params_debug.append(f"parse error: {parse_err}")
-                                
+                                except Exception:
+                                    pass
+                except Exception as ge_err:
+                    ge_debug += f" [get_element_data error: {ge_err}]"
+
+                if not lots:
+                    return {
+                        "audit_type": "lot_area",
+                        "status": "Unavailable",
+                        "narrative": (
+                            f"OST_SiteProperty element(s) found (IDs: {element_ids_for_fallback}), "
+                            "but Area could not be read from either query_model or get_element_data.\n"
+                            f"query_model params seen: {params_debug}\n"
+                            f"get_element_data snippet: {ge_debug!r}\n"
+                            f"query_model snippet: {raw_text_debug!r}"
+                        ),
+                    }
+
             if not lots:
                 return {
                     "audit_type": "lot_area",
                     "status": "Unavailable",
                     "narrative": (
-                        f"Property line element(s) found (IDs: {element_ids}), "
-                        "but the 'Area' parameter could not be read from the element data.\n"
-                        f"Diagnostic — parameter keys seen: {raw_params_debug}"
-                    )
+                        f"OST_SiteProperty elements found but Area param not present.\n"
+                        f"params_debug: {params_debug}\n"
+                        f"query_model snippet: {raw_text_debug!r}"
+                    ),
                 }
-                
+
+            # ----------------------------------------------------------------
+            # Step 4: Compute totals and return
+            # ----------------------------------------------------------------
+            total_area_sqft = sum(lot["area_sqft"] for lot in lots)
             total_area_acres = total_area_sqft / one_acre_sqft
-            
+
             narrative = f"Lot area audit complete. Found {len(lots)} property line(s).\n"
-            narrative += f"Total Area: {total_area_sqft:,.2f} sq ft ({total_area_acres:,.2f} acres)\n"
+            narrative += f"Total Area: {total_area_sqft:,.2f} sq ft ({total_area_acres:,.4f} acres)\n"
             for lot in lots:
                 narrative += f"  - {lot['name']}: {lot['area_sqft']:,.2f} sq ft\n"
-                
+
             return {
                 "audit_type": "lot_area",
                 "status": "Success",
                 "total_area_sqft": total_area_sqft,
                 "total_area_acres": total_area_acres,
                 "lots": lots,
-                "narrative": narrative
+                "narrative": narrative,
             }
-                
+
         except Exception as e:
             return {
                 "audit_type": "lot_area",
                 "error": str(e),
+
                 "narrative": f"Error running lot area audit: {e}"
             }
 
@@ -835,23 +910,6 @@ class McpStdioTransport:
         include_details = arguments.get("include_details", True)
         
         try:
-            # 1. Get Lot Area
-            lot_result = await self._run_lot_area_audit(arguments)
-            if lot_result.get("status") == "Unavailable":
-                return {
-                    "audit_type": "lot_coverage",
-                    "status": "Unavailable",
-                    "narrative": "The lot coverage calculation could not be performed because the audit tool was unable to determine the lot area from the property lines in the model."
-                }
-                
-            total_lot_sqft = lot_result.get("total_area_sqft", 0.0)
-            if total_lot_sqft <= 0:
-                return {
-                    "audit_type": "lot_coverage",
-                    "status": "Unavailable",
-                    "narrative": "The lot area was calculated as zero, which prevents coverage calculation."
-                }
-                
             # Helper to query and sum areas — uses KeyParameters (proven to return Area)
             async def get_category_area(category_name):
                 raw = await self._run_governed_tool_sync(
@@ -873,11 +931,23 @@ class McpStdioTransport:
                             if isinstance(item, dict) and item.get("type") == "text":
                                 try:
                                     parsed = json.loads(item.get("text", "{}"))
-                                    r = parsed.get("results", {})
-                                    if isinstance(r, dict):
-                                        cat_element_ids = r.get("Element Ids", [])
-                                    elif isinstance(r, list):
-                                        cat_element_ids = r
+                                    # Shape A: outcome → elements list (primary Revit MCP format)
+                                    elements = parsed.get("outcome", {}).get("elements", [])
+                                    if not elements:
+                                        elements = parsed.get("elements", [])
+                                    if elements and isinstance(elements, list):
+                                        for e in elements:
+                                            if isinstance(e, dict):
+                                                eid = e.get("elementId") or e.get("id")
+                                                if eid is not None:
+                                                    cat_element_ids.append(eid)
+                                    # Shape B fallback: results → Element Ids
+                                    if not cat_element_ids and "results" in parsed:
+                                        r = parsed["results"]
+                                        if isinstance(r, dict):
+                                            cat_element_ids = r.get("Element Ids", [])
+                                        elif isinstance(r, list):
+                                            cat_element_ids = r
                                 except Exception:
                                     pass
                 
@@ -886,6 +956,7 @@ class McpStdioTransport:
 
                 AREA_KEYS = ["Area", "area", "ROOM_AREA", "GSA_SPACE_AREA"]
                 NAME_KEYS = ["Name", "Mark", "Type Name", "Family"]
+                LEVEL_KEYS = ["Level", "level", "LEVEL_PARAM"]
 
                 def _pick(params, keys):
                     for k in keys:
@@ -896,13 +967,7 @@ class McpStdioTransport:
                     
                 data_raw = await self._run_governed_tool_sync(
                     "get_element_data",
-                    {
-                        "elementIds": [int(eid) for eid in cat_element_ids],
-                        "outputOptions": {
-                            "basicElementInfo": True,
-                            "parametersOutputType": "KeyParameters"
-                        }
-                    },
+                    {"elementIds": [int(eid) for eid in cat_element_ids]},
                 )
                 
                 total_sqft = 0.0
@@ -915,33 +980,100 @@ class McpStdioTransport:
                             if isinstance(item, dict) and item.get("type") == "text":
                                 try:
                                     parsed = json.loads(item.get("text", "{}"))
-                                    results = parsed.get("results", {})
-                                    if isinstance(results, list):
-                                        results = {str(i): v for i, v in enumerate(results)}
-                                    if isinstance(results, dict):
-                                        for key, val in results.items():
-                                            if not isinstance(val, dict):
-                                                continue
-                                            params = val.get("parameters", val)
-                                            area_val = _pick(params, AREA_KEYS)
-                                            name_val = _pick(params, NAME_KEYS) or f"Element {key}"
-                                                
-                                            if area_val is not None:
-                                                try:
-                                                    area_float = self._extract_number(area_val)
-                                                    if area_float > 0:
-                                                        total_sqft += area_float
-                                                        elements_info.append({"name": name_val, "area_sqft": area_float})
-                                                except ValueError:
+
+                                    # Normalise to flat element list (same dual-shape handling as lot area):
+                                    #   Shape A: {"elements": [{"elementId": N, "parameters": {...}}]}
+                                    #   Shape B: {"results": {"id": {"parameters": {...}}, ...}}
+                                    elem_list = []
+                                    shape_a = parsed.get("elements") or parsed.get("outcome", {}).get("elements")
+                                    if isinstance(shape_a, list):
+                                        elem_list = shape_a
+                                    else:
+                                        results = parsed.get("results", {})
+                                        if isinstance(results, list):
+                                            results = {str(i): v for i, v in enumerate(results)}
+                                        if isinstance(results, dict):
+                                            for val in results.values():
+                                                if isinstance(val, dict):
+                                                    elem_list.append(val)
+
+                                    for elem_val in elem_list:
+                                        if not isinstance(elem_val, dict):
+                                            continue
+                                        params = elem_val.get("parameters", elem_val)
+                                        area_val = _pick(params, AREA_KEYS)
+                                        elem_id = elem_val.get("elementId") or elem_val.get("id", "?")
+                                        name_val = _pick(params, NAME_KEYS) or f"Element {elem_id}"
+                                        level_val = _pick(params, LEVEL_KEYS) or None
+
+                                        if area_val is not None:
+                                            try:
+                                                area_float = self._extract_number(area_val)
+                                                if area_float > 0:
+                                                    total_sqft += area_float
+                                                    elements_info.append({
+                                                        "name": name_val,
+                                                        "area_sqft": area_float,
+                                                        "level": level_val,
+                                                    })
+                                            except ValueError:
                                                     pass
                                 except Exception:
                                     pass
                 return total_sqft, elements_info
+            
+            # 1. Get Lot Area — reuse _run_lot_area_audit which has the proven
+            # two-step OST_SiteProperty query logic (query → element IDs → get_element_data).
+            lot_result = await self._run_lot_area_audit(arguments)
+            if lot_result.get("status") == "Unavailable":
+                return {
+                    "audit_type": "lot_coverage",
+                    "status": "Unavailable",
+                    "narrative": "The lot coverage calculation could not be completed. "
+                                 "The audit tool was unable to find property lines "
+                                 "(OST_SiteProperty elements) in the model, which are "
+                                 "required to calculate the lot area. "
+                                 "Please add property lines via the Revit Site tab → Property Line tool."
+                }
+            total_lot_sqft = lot_result.get("total_area_sqft", 0.0)
+            if total_lot_sqft <= 0:
+                return {
+                    "audit_type": "lot_coverage",
+                    "status": "Unavailable",
+                    "narrative": "The lot area was calculated as zero — cannot compute coverage."
+                }
                 
             # 2. Get Building Footprint (OST_Floors)
-            floor_sqft, floor_details = await get_category_area("OST_Floors")
+            # For lot coverage, the building footprint is the largest floor plate
+            # area on a single level (not the sum of all floors across all levels).
+            _, floor_details = await get_category_area("OST_Floors")
+            
+            # Group floors by level and find the level with the largest total area
+            from collections import defaultdict
+            level_groups = defaultdict(list)
+            for fd in floor_details:
+                lv = fd.get("level") or "Unknown Level"
+                level_groups[lv].append(fd)
+            
+            max_level_name = ""
+            max_level_area = 0.0
+            level_breakdown = []
+            for lv_name, elements in level_groups.items():
+                lv_total = sum(e.get("area_sqft", 0) for e in elements)
+                level_entry = {
+                    "level_name": lv_name,
+                    "total_area_sqft": lv_total,
+                    "elements": elements,
+                }
+                level_breakdown.append(level_entry)
+                if lv_total > max_level_area:
+                    max_level_area = lv_total
+                    max_level_name = lv_name
+            
+            floor_sqft = max_level_area  # building footprint = max level area
             
             # 3. Get Additional Covered Areas (OST_Areas)
+            # Additional areas (decks, patios) are summed — they are not stacked by level.
             area_sqft, area_details = await get_category_area("OST_Areas")
             
             total_covered_sqft = floor_sqft + area_sqft
@@ -952,16 +1084,21 @@ class McpStdioTransport:
             narrative = f"Lot Coverage Audit Complete.\n"
             narrative += f"Total Lot Area: {total_lot_sqft:,.2f} sq ft\n"
             narrative += f"Building Footprint Area: {floor_sqft:,.2f} sq ft\n"
+            narrative += f"  (largest single-level floor plate: {max_level_name})\n"
             narrative += f"Additional Covered Area: {area_sqft:,.2f} sq ft\n\n"
             
             narrative += f"Building Lot Coverage: {building_coverage_pct:.1f}%\n"
             narrative += f"Total Lot Coverage: {total_coverage_pct:.1f}%\n"
             
             if include_details:
-                if floor_details:
-                    narrative += "\nBuilding Footprint Details:\n"
-                    for f in floor_details:
-                        narrative += f"  - {f['name']}: {f['area_sqft']:,.2f} sq ft\n"
+                if level_breakdown:
+                    narrative += "\nBuilding Footprint — Per-Level Breakdown:\n"
+                    for lv_entry in level_breakdown:
+                        narrative += f"\n  Level: {lv_entry['level_name']}\n"
+                        for elem in lv_entry["elements"]:
+                            narrative += f"    - {elem['name']}: {elem['area_sqft']:,.2f} sq ft\n"
+                        narrative += f"    Level Subtotal: {lv_entry['total_area_sqft']:,.2f} sq ft\n"
+                    narrative += f"\n  Building Footprint (Largest Level): {max_level_area:,.2f} sq ft ({max_level_name})\n"
                 if area_details:
                     narrative += "\nAdditional Covered Area Details:\n"
                     for a in area_details:
@@ -975,6 +1112,8 @@ class McpStdioTransport:
                 "additional_area_sqft": area_sqft,
                 "building_coverage_percent": building_coverage_pct,
                 "total_coverage_percent": total_coverage_pct,
+                "max_level_name": max_level_name,
+                "level_breakdown": level_breakdown,
                 "details": {
                     "floors": floor_details,
                     "areas": area_details

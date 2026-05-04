@@ -33,11 +33,18 @@ Currently, all Revit database queries are forced to queue and execute sequential
 
 > [!NOTE]  
 > **Current Testing Baseline:** This middleware is currently optimized and tested using the **Qwen 3.6 (35B)** model running locally via Ollama (`qwen3.6:35b-a3b-bf16`). 
+> **Important Connectivity Note:** Local Ollama LLM connections are verified to work. However, **LLM APIs** (external cloud providers) are currently failing to work correctly with AnythingLLM for this MCP integration.
 
 Because this engine relies heavily on strict MCP tool-calling sequences and rigorous adherence to the workspace system prompt, your choice of LLM dictates the success rate of the audits.
 
-* **Recommended:** Models in the 30B+ parameter range (like Qwen or deep reasoning models) are highly recommended. They possess the necessary context window and instruction-following capabilities to handle complex JSON schema routing reliably.
-* **Warning (Smaller Models):** Smaller models (e.g., 7B–8B parameters) often fail to pass required arguments (such as omitting `"searchScope": "AllViews"`) or get stuck in infinite retry loops. This poor tool-calling behavior directly increases the risk of deadlocking the Revit main thread. Performance and outcomes will vary significantly if you deviate from the baseline model class.
+* **Recommended (Verified Stable):** 
+  - `qwen3.6:35b-a3b-bf16`
+  - `nemotron-3-super:latest`
+* **Warning (Known Failures):** 
+  - `gpt-oss:120b`
+  - `glm-4.7-flash-40k:latest`
+  - `mistral-medium-3.5:latest`
+  - Smaller models (e.g., 7B–8B parameters) often fail to pass required arguments (such as omitting `"searchScope": "AllViews"`) or get stuck in infinite retry loops. This poor tool-calling behavior directly increases the risk of deadlocking the Revit main thread. Performance and outcomes will vary significantly if you deviate from the baseline model class.
 
 ---
 
@@ -291,13 +298,13 @@ Because Revit processes all database queries sequentially on a single main threa
 
 The Governance Layer does not *create* this latency, but it actively manages it. If a Revit task approaches the client timeout threshold, the governor intervenes by sending a heartbeat back to AnythingLLM to keep the connection alive. From the user's perspective, this means you may experience noticeable delays (sometimes 30-60+ seconds) while waiting for an agent to finish a complex task. This is expected behavior and a direct result of Revit's single-threaded architecture queuing the workload.
 
-### 5. Read-Only and Host-Model Access Only
+### 5. Revit MCPServer: Read-Only and Host-Model Access Only
 
-The Revit MCP is currently restricted by the following environmental constraints:
+The native Revit MCPServer is currently restricted by the following environmental constraints:
 
-*   **Read-Only Access:** The engine can only query and retrieve data from the model.
-*   **Host Model Only:** Only the elements within the primary host model are available for query.
-*   **Linked Models Inaccessible:** Data from linked Revit models in the primary host model is currently not accessible, similar to limitations found in the Revit 2027 built-in Autodesk Assistant
+*   **Read-Only Access:** The engine can only query and retrieve data from the model; it cannot modify elements.
+*   **Host Model Only:** Data extraction is limited to the primary Host model.
+*   **Linked Models Inaccessible:** The server does not extract data from linked models, mirroring the limitations of the built-in Autodesk Assistant.
 
 ---
 

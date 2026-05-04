@@ -189,6 +189,32 @@ class McpStdioTransport:
                 },
             },
             {
+                "name": "axo_query_floor_area",
+                "description": (
+                    "Query floor element areas from the active Revit model. "
+                    "Queries OST_Floors elements, extracts the Area parameter using AllParameters, "
+                    "groups by Level, and returns the largest single-level floor area "
+                    "(building footprint) plus a per-level breakdown. "
+                    "Use this tool to determine the building footprint for lot coverage calculations."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "level_names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional list of level names to filter by (e.g., ['FP1.GARAGE', 'FP2.ADU']). If omitted, returns data for all levels.",
+                        },
+                        "include_details": {
+                            "type": "boolean",
+                            "description": "Include per-element area breakdown. Default: true.",
+                            "default": True,
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
                 "name": "axo_audit_lot_coverage",
                 "description": (
                     "Calculate lot coverage percentage for the active Revit model. "
@@ -1001,6 +1027,283 @@ class McpStdioTransport:
                 "narrative": f"Error running lot area audit: {e}",
             }
 
+    async def _run_floor_area_query(self, arguments: dict) -> dict:
+        """
+        Floor area query — queries OST_Floors elements with AllParameters,
+        extracts Area per element, groups by Level, and returns the largest
+        single-level floor area (building footprint).
+
+        This is a standalone tool that can be called independently by the agent.
+        It uses AllParameters (not KeyParameters) to ensure the Area parameter
+        is available for every floor element.
+        """
+        import re as _re
+        from collections import defaultdict
+
+        level_names = arguments.get("level_names", None)
+        include_details = arguments.get("include_details", True)
+
+        # ------------------------------------------------------------------
+        # Shared helpers
+        # ------------------------------------------------------------------
+
+        def _pick(params: dict, keys: list):
+            for k in keys:
+                if k in params:
+                    v = params[k]
+                    return v.get("value") if isinstance(v, dict) else v
+            return None
+
+        def _get_raw_text(raw_resp: Any) -> str:
+            if not isinstance(raw_resp, dict):
+                return json.dumps(raw_resp, default=str) if raw_resp else ""
+            for itm in raw_resp.get("content", []):
+                if isinstance(itm, dict) and itm.get("type") == "text":
+                    return itm.get("text", "")
+            return json.dumps(raw_resp, default=str)
+
+        def _extract_element_ids(raw_resp: Any) -> list[int]:
+            ids: list[int] = []
+            text = _get_raw_text(raw_resp)
+            if not text:
+                return ids
+            try:
+                parsed = json.loads(text)
+                for el in parsed.get("outcome", {}).get("elements", []):
+                    eid = (el or {}).get("elementId") or (el or {}).get("id")
+                    if eid is not None:
+                        ids.append(int(eid))
+                if not ids:
+                    for el in parsed.get("elements", []):
+                        eid = (el or {}).get("elementId") or (el or {}).get("id")
+                        if eid is not None:
+                            ids.append(int(eid))
+                if not ids:
+                    r = parsed.get("results", {})
+                    if isinstance(r, dict):
+                        ids = [int(x) for x in r.get("Element Ids", []) if x]
+                    elif isinstance(r, list):
+                        ids = [int(x) for x in r if x]
+                if not ids and "Element Ids" in parsed:
+                    ids = [int(x) for x in parsed["Element Ids"] if x]
+            except Exception:
+                pass
+            if not ids:
+                ids = [int(m) for m in _re.findall(r'\b(\d{6,8})\b', text)]
+            return ids
+
+        def _extract_elements(raw_resp: Any) -> list[dict]:
+            text = _get_raw_text(raw_resp)
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+                if "elements" in parsed and isinstance(parsed["elements"], list):
+                    return parsed["elements"]
+                out_e = parsed.get("outcome", {}).get("elements", [])
+                if out_e:
+                    return out_e
+                results = parsed.get("results", {})
+                if isinstance(results, dict) and "Element Ids" not in results:
+                    elems = [v for v in results.values() if isinstance(v, dict)]
+                    if elems:
+                        return elems
+            except Exception:
+                pass
+            return []
+
+        AREA_KEYS = ["Area", "area", "ROOM_AREA", "GSA_SPACE_AREA", "NetArea", "GrossArea", "AREA"]
+        NAME_KEYS = ["Name", "Mark", "Type Name", "Family"]
+        LEVEL_KEYS = ["Level", "level", "LEVEL_PARAM"]
+
+        # ------------------------------------------------------------------
+        # Step 1: query_model for OST_Floors
+        # ------------------------------------------------------------------
+        try:
+            logger.info("FLOOR_AREA_QUERY: querying OST_Floors …")
+            raw = await self._run_governed_tool_sync(
+                "query_model",
+                {
+                    "input": {
+                        "categories": ["OST_Floors"],
+                        "searchScope": "AllViews",
+                        "maxResults": 200,
+                    }
+                },
+            )
+
+            floor_ids = _extract_element_ids(raw)
+            logger.info("FLOOR_AREA_QUERY: found %d floor element IDs: %s",
+                        len(floor_ids), floor_ids[:10])
+
+            if not floor_ids:
+                return {
+                    "audit_type": "floor_area_query",
+                    "status": "Unavailable",
+                    "narrative": "No OST_Floors elements found in the model.",
+                    "building_footprint_sqft": 0.0,
+                    "levels": [],
+                }
+
+            # ------------------------------------------------------------------
+            # Step 2: get_element_data with AllParameters (critical fix!)
+            # ------------------------------------------------------------------
+            data_raw = await self._run_governed_tool_sync(
+                "get_element_data",
+                {
+                    "elementIds": [int(eid) for eid in floor_ids],
+                    "outputOptions": {
+                        "basicElementInfo": True,
+                        "parametersOutputType": "AllParameters",
+                    },
+                },
+            )
+
+            elem_list = _extract_elements(data_raw)
+            logger.info("FLOOR_AREA_QUERY: get_element_data -> %d elements", len(elem_list))
+
+            # ------------------------------------------------------------------
+            # Step 3: Extract area per element, group by level
+            # ------------------------------------------------------------------
+            floor_details = []
+            for elem_val in elem_list:
+                if not isinstance(elem_val, dict):
+                    continue
+                params = elem_val.get("parameters", {})
+                elem_id = elem_val.get("elementId") or elem_val.get("id", "?")
+
+                area_val = _pick(params, AREA_KEYS)
+                if area_val is None:
+                    area_val = _pick(elem_val, AREA_KEYS)
+                if area_val is None and "area" in elem_val:
+                    area_val = elem_val["area"]
+
+                name_val = (
+                    elem_val.get("name")
+                    or _pick(params, NAME_KEYS)
+                    or _pick(elem_val, NAME_KEYS)
+                    or f"Floor {elem_id}"
+                )
+                level_val = (
+                    _pick(params, LEVEL_KEYS)
+                    or _pick(elem_val, LEVEL_KEYS)
+                    or elem_val.get("level")
+                    or None
+                )
+
+                if area_val is not None:
+                    try:
+                        area_float = self._extract_number(area_val)
+                        if area_float > 0:
+                            floor_details.append({
+                                "name": name_val,
+                                "area_sqft": area_float,
+                                "level": level_val,
+                                "element_id": elem_id,
+                            })
+                            logger.info("FLOOR_AREA_QUERY:   id=%s area=%.2f level=%s name=%s",
+                                        elem_id, area_float, level_val, name_val)
+                    except ValueError:
+                        pass
+
+            if not floor_details:
+                return {
+                    "audit_type": "floor_area_query",
+                    "status": "Unavailable",
+                    "narrative": (
+                        f"Found {len(floor_ids)} floor element(s) but could not extract "
+                        "Area parameter values. The Area parameter may not be populated "
+                        "for these elements."
+                    ),
+                    "building_footprint_sqft": 0.0,
+                    "levels": [],
+                }
+
+            # ------------------------------------------------------------------
+            # Step 4: Group by level, find largest single-level area
+            # ------------------------------------------------------------------
+            level_groups = defaultdict(list)
+            for fd in floor_details:
+                lv = fd.get("level") or "Unknown Level"
+                if level_names and lv not in level_names:
+                    continue
+                level_groups[lv].append(fd)
+
+            if not level_groups:
+                return {
+                    "audit_type": "floor_area_query",
+                    "status": "Unavailable",
+                    "narrative": (
+                        f"Floor elements found but none matched the requested level filter: {level_names}"
+                    ),
+                    "building_footprint_sqft": 0.0,
+                    "levels": [],
+                }
+
+            max_level_name = ""
+            max_level_area = 0.0
+            level_breakdown = []
+            for lv_name, elements in level_groups.items():
+                lv_total = sum(e.get("area_sqft", 0) for e in elements)
+                level_breakdown.append({
+                    "level_name": lv_name,
+                    "total_area_sqft": lv_total,
+                    "element_count": len(elements),
+                    "elements": elements if include_details else [],
+                })
+                if lv_total > max_level_area:
+                    max_level_area = lv_total
+                    max_level_name = lv_name
+
+            # ------------------------------------------------------------------
+            # Step 5: Build result
+            # ------------------------------------------------------------------
+            total_all_levels = sum(lv["total_area_sqft"] for lv in level_breakdown)
+
+            narrative_parts = [
+                f"Floor area query complete. Found {len(floor_details)} floor element(s) "
+                f"across {len(level_breakdown)} level(s).",
+                f"Total floor area (all levels): {total_all_levels:,.2f} sq ft",
+                f"Largest single-level area: {max_level_area:,.2f} sq ft ({max_level_name})",
+                f"Building footprint (for lot coverage): {max_level_area:,.2f} sq ft",
+            ]
+            if level_names:
+                narrative_parts.insert(
+                    0,
+                    f"Filtered to level(s): {', '.join(level_names)}",
+                )
+
+            if include_details and level_breakdown:
+                narrative_parts.append("\nPer-Level Breakdown:")
+                for lv in level_breakdown:
+                    narrative_parts.append(
+                        f"  {lv['level_name']}: {lv['total_area_sqft']:,.2f} sq ft "
+                        f"({lv['element_count']} element(s))"
+                    )
+                    for elem in lv.get("elements", []):
+                        narrative_parts.append(
+                            f"    - {elem['name']}: {elem['area_sqft']:,.2f} sq ft"
+                        )
+
+            return {
+                "audit_type": "floor_area_query",
+                "status": "Success",
+                "total_floor_elements": len(floor_details),
+                "total_area_all_levels_sqft": total_all_levels,
+                "building_footprint_sqft": max_level_area,
+                "building_footprint_level": max_level_name,
+                "levels": level_breakdown,
+                "narrative": "\n".join(narrative_parts),
+            }
+
+        except Exception as e:
+            logger.error("FLOOR_AREA_QUERY: EXCEPTION - %s", e, exc_info=True)
+            return {
+                "audit_type": "floor_area_query",
+                "error": str(e),
+                "narrative": f"Error running floor area query: {e}",
+            }
+
     async def _run_lot_coverage_audit(self, arguments: dict) -> dict:
         """
         Lot coverage audit — computes (Building Footprint / Total Lot Area) * 100.
@@ -1150,7 +1453,7 @@ class McpStdioTransport:
                     "elementIds": [int(eid) for eid in cat_ids],
                     "outputOptions": {
                         "basicElementInfo": True,
-                        "parametersOutputType": "KeyParameters",
+                        "parametersOutputType": "AllParameters",
                     },
                 },
             )
@@ -1421,6 +1724,21 @@ class McpStdioTransport:
 
                 elif tool_name == "axo_audit_floor_area":
                     result = await self._run_floor_area_audit(arguments)
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(result, indent=2),
+                                }
+                            ]
+                        },
+                    }
+
+                elif tool_name == "axo_query_floor_area":
+                    result = await self._run_floor_area_query(arguments or {})
                     return {
                         "jsonrpc": "2.0",
                         "id": request_id,

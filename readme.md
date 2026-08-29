@@ -41,6 +41,7 @@ Because this engine relies heavily on strict MCP tool-calling sequences and rigo
   - `qwen3.6:35b-a3b-bf16`
   - `nemotron-3-super:latest`
 * **Warning (Known Failures):** 
+  - 'qwen3.6:35b'
   - `gpt-oss:120b`
   - `glm-4.7-flash-40k:latest`
   - `mistral-medium-3.5:latest`
